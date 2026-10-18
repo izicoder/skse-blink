@@ -102,33 +102,25 @@ e.g. a git-ignored `CMakeUserPresets.json`:
 
 ## Releasing
 
-The archive that goes on Nexus is built and uploaded by two scripts in `tools/`; both talk to
-Nexus Mods' official **Upload API (v3)**, so a release is one command and nothing touches the
-website. Get an API key from [your API keys page](https://www.nexusmods.com/settings/api-keys)
-and put it in `NEXUSMODS_API_KEY`.
+`tools/Build-Release.ps1` builds the release and packages it in one step:
 
 ```powershell
-# 1. build the archive: SKSE/Plugins (DLL + both JSONs) and docs/, as packages/BlinkDash-<version>.zip
-.\tools\Package.ps1 -Version 1.0.0
-
-# 2a. first release of the mod: add the archive as a new file
-.\tools\Publish-Nexus.ps1 -Version 1.0.0 -ModId <mod id> -UpdateModVersion
-
-# 2b. every release after that: add it as a new version of the existing file
-.\tools\Publish-Nexus.ps1 -Version 1.0.1 -ModId <mod id> -FileId <file id> `
-	-UpdateModVersion -Changelog "Fixed the landing offset on slopes."
+.\tools\Build-Release.ps1 -Version 1.0.1
 ```
 
-- **Mod id** is the number in the mod page URL (`…/skyrimspecialedition/mods/**123456**`).
-- **File id** is the v3 id of the file this release updates — the *update chain* id shown under
-  the **Advanced** option on the mod's Files tab. Keep using the same one for every release.
-- The script creates an upload session, PUTs the zip to the returned presigned URL (with the
-  `Content-Disposition`/`Content-MD5` headers the signature requires), finalises it, waits for
-  the file to become available, then creates the file/version and the changelog.
+It configures and builds the `vs2022` preset with `-Version` stamped into the binary (so the log
+line and the SKSE plugin record report it), then writes `packages/BlinkDash-<version>.zip`
+containing `SKSE/Plugins` (DLL + both JSONs) and `docs/`, which MO2/Vortex install as-is. Upload
+that zip by hand on the [mod page](https://www.nexusmods.com/skyrimspecialedition/mods/195907)
+under **Files**. Nothing in the repo talks to the Nexus API.
 
-The API can only add files to a mod that already exists, so the mod page and its **first** file
-are still created by hand on the site; everything after that is automated. Archives over 100 MiB
-would need the multipart endpoints, which the script does not use (BlinkDash is well under it).
+- The MSVC environment is set up by the script itself (it runs `vcvars64.bat`, located with
+  `vswhere`), so it can be started from a normal shell; `VCPKG_ROOT` or a `.vcpkg` checkout next
+  to the repo is still required.
+- `-SkipBuild` re-zips whatever is already in the build tree — for a failed upload, not for
+  skipping the version stamp; rebuild when `-Version` changes.
+- `-FromFolder <mod folder>` packages an already deployed mod folder (what `MOD_OUTPUT_FOLDER`
+  deploys) instead of the build output.
 
 ## Direction
 

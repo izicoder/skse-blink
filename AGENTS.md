@@ -28,8 +28,7 @@ below as the intended style to keep, not as proof of quality.
 | `src/UI.h/.cpp` | The SKSE Menu Framework tab: sliders, hotkey rebind, effect dropdown, logging/debug toggles, in-game overlay. |
 | `extern/SKSEMenuFramework.h` | Vendored framework header (do not edit; it wraps ImGui as `ImGuiMCP`). |
 | `tools/GenerateShaderNames.ps1` | Generates `dist/BlinkDash.ShaderNames.json` from the vanilla masters. |
-| `tools/Package.ps1` | Stages `SKSE/Plugins` (DLL + both JSONs) plus `docs/` into `packages/BlinkDash-<version>.zip`. |
-| `tools/Publish-Nexus.ps1` | Uploads that zip with Nexus Mods' official Upload API v3: upload session → presigned PUT → finalise → mod file version, with changelog. |
+| `tools/Build-Release.ps1` | The release script: builds (stamping `-Version` into the DLL), then stages `SKSE/Plugins` (DLL + both JSONs) plus `docs/` into `packages/BlinkDash-<version>.zip` for a manual upload. |
 | `dist/` | Shipped default `BlinkDash.json` + the generated shader names file. |
 
 ## Build & deploy
