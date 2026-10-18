@@ -15,6 +15,8 @@ namespace BlinkDash
 		constexpr float kMinRetrigger = 0.02f;   // below this a human cannot tap it anyway
 		constexpr float kMaxRetrigger = 2.0f;
 		constexpr float kMaxCooldown = 5.0f;
+		constexpr float kMinSlope = 20.0f;       // below this even stairs would be treated as walls
+		constexpr float kMaxSlope = 80.0f;
 
 		// Same path discovery as before: the JSON sits next to the loaded DLL,
 		// so under MO2 it lives inside the mod folder and not the game install.
@@ -45,6 +47,7 @@ namespace BlinkDash
 				{ "staminaCost", a_settings.staminaCost },
 				{ "retriggerDelay", a_settings.retriggerDelay },
 				{ "cooldown", a_settings.cooldown },
+				{ "maxSlope", a_settings.maxSlope },
 				{ "effectShader", a_settings.effectShader },
 				{ "debugOverlay", a_settings.debugOverlay },
 			};
@@ -61,9 +64,9 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) effectShader='{}' debugOverlay={}",
+			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) maxSlope={:.0f}deg effectShader='{}' debugOverlay={}",
 			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
-			s.cooldown, s.cooldown * 1000.0f,
+			s.cooldown, s.cooldown * 1000.0f, s.maxSlope,
 			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay);
 	}
 
@@ -83,7 +86,7 @@ namespace BlinkDash
 			s.hotkey = 0x103;
 			changed = true;
 		}
-		if (std::isnan(s.distance) || std::isnan(s.staminaCost) || std::isnan(s.retriggerDelay)) {
+		if (std::isnan(s.distance) || std::isnan(s.staminaCost) || std::isnan(s.retriggerDelay) || std::isnan(s.maxSlope)) {
 			BDW("config: NaN found in the settings, resetting everything to defaults");
 			s = Settings{};
 			changed = true;
@@ -107,6 +110,11 @@ namespace BlinkDash
 		if (s.cooldown < 0.0f || s.cooldown > kMaxCooldown) {
 			BDW("config: cooldown {:.3f}s out of range, clamping to [0, {:.2f}]", s.cooldown, kMaxCooldown);
 			s.cooldown = std::clamp(s.cooldown, 0.0f, kMaxCooldown);
+			changed = true;
+		}
+		if (s.maxSlope < kMinSlope || s.maxSlope > kMaxSlope) {
+			BDW("config: maxSlope {:.1f} out of range, clamping to [{:.0f}, {:.0f}]", s.maxSlope, kMinSlope, kMaxSlope);
+			s.maxSlope = std::clamp(s.maxSlope, kMinSlope, kMaxSlope);
 			changed = true;
 		}
 		if (s.effectShader.size() > 64) {
@@ -158,7 +166,8 @@ namespace BlinkDash
 
 			auto& s = Get();
 			for (const auto& [key, value] : json.items()) {
-				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay" || key == "effectShader") {
+				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay" || key == "cooldown" ||
+					key == "maxSlope" || key == "effectShader" || key == "debugOverlay") {
 					BD("config:   {} = {}", key, value.dump());
 				} else {
 					BDW("config:   ignoring obsolete option '{}' = {}", key, value.dump());
@@ -179,6 +188,9 @@ namespace BlinkDash
 			}
 			if (json.contains("cooldown")) {
 				s.cooldown = json.at("cooldown").get<float>();
+			}
+			if (json.contains("maxSlope")) {
+				s.maxSlope = json.at("maxSlope").get<float>();
 			}
 			if (json.contains("effectShader")) {
 				s.effectShader = json.at("effectShader").get<std::string>();

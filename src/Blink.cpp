@@ -17,8 +17,6 @@ namespace BlinkDash
 	namespace
 	{
 		// Internal tuning that is not exposed in the menu.
-		constexpr float kChestHeight = 64.0f;      // lower obstacle ray above the feet
-		constexpr float kHeadHeight = 120.0f;      // upper obstacle ray above the feet
 		constexpr float kMaxDistanceCap = 2020.0f;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 10.0f;        // shortest blink worth doing
@@ -32,15 +30,27 @@ namespace BlinkDash
 		constexpr float kGroundProbeDown = 600.0f;
 		constexpr float kGroundLift = 4.0f;        // land a hair above the floor
 		constexpr float kMaxSnapDown = 256.0f;     // further down than this = the drop is ignored
-		constexpr float kMaxSnapUp = 256.0f;       // further up than this = do not pop up onto a ledge
+		constexpr float kMaxSnapUp = 256.0f;       // floor under the climb band: a level landing may still be this far above the feet
+		constexpr float kMaxClimbFollow = 1024.0f;  // furthest up a followed slope is allowed to climb over one blink
 		constexpr float kGroundedTolerance = 32.0f;  // ground this close under the feet means "standing"
 		constexpr std::uintptr_t kMinPlausibleVtable = 0x10000;
+		constexpr float kRadiansPerDegree = 3.14159265f / 180.0f;
+		constexpr float kTwoPi = 6.28318531f;
+
+		// Obstacle rays: one per body height, so a crate, a step or a boulder shorter
+		// than the chest is still in the way. The first is ankle height, which is what
+		// makes a slope climbable and a cliff not: on a slope it hits the ground of the
+		// slope (walked along), on a cliff it hits the face (solid).
+		constexpr float kPathHeights[] = { 8.0f, 32.0f, 56.0f, 80.0f, 104.0f, 128.0f };
+		constexpr const char* kPathLabels[] = { "ankle", "knee", "waist", "chest", "shoulder", "head" };
 
 		// Destination body fit: the obstacle rays test a line, so a corner can still
 		// clip a shoulder where that line is clear. Once a landing is picked, the body
-		// volume there is probed sideways and the travel is stepped back until it fits.
-		constexpr float kBodyProbeHeights[] = { 48.0f, kHeadHeight };
-		constexpr float kBodyProbeLength = 24.0f;  // under the controller radius, so only real overlap trips it
+		// volume there is probed in a circle and the travel is stepped back until it fits.
+		constexpr float kBodyProbeHeights[] = { 16.0f, 48.0f, 80.0f, 112.0f };
+		constexpr int   kBodyProbeDirections = 8;
+		constexpr float kBodyProbeLength = 28.0f;  // under the controller radius, so only real overlap trips it
+		constexpr float kBodyProbeTop = 128.0f;    // a ceiling below this is an overlap no sideways probe can see
 		constexpr float kFitStep = 25.0f;
 		constexpr int   kMaxFitPulls = 8;
 
@@ -62,19 +72,6 @@ namespace BlinkDash
 		{
 			static const auto start = std::chrono::steady_clock::now();
 			return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-		}
-
-		void AddSegment(Debug::Snapshot& a_snapshot, const char* a_label, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to, const RE::NiPoint3& a_point, bool a_hit, float a_fraction)
-		{
-			if (a_snapshot.count >= Debug::Snapshot::kMaxSegments) {
-				return;
-			}
-			auto& segment = a_snapshot.segments[a_snapshot.count++];
-			segment.from = a_from;
-			segment.to = a_hit ? a_point : a_to;
-			segment.hit = a_hit;
-			segment.fraction = a_fraction;
-			segment.label = a_label;
 		}
 
 		// -----------------------------------------------------------------------
@@ -277,7 +274,25 @@ namespace BlinkDash
 			RE::NiPoint3 point{};
 			bool         hit{ false };
 			float        fraction{ 1.0f };
+			float        slopeDegrees{ 90.0f };  // angle of the hit surface from flat; 90 = a wall
 		};
+
+		// Havok reports the hit normal in world space, and the havok world is a uniform
+		// scale of the game world, so the direction needs no conversion. A normal that
+		// is missing or unusable reads as a wall: that keeps the old "everything blocks"
+		// behaviour on a runtime that does not fill it in, instead of letting blinks
+		// through geometry.
+		float SlopeFromNormal(const RE::hkVector4& a_normal)
+		{
+			alignas(16) float raw[4]{};
+			_mm_storeu_ps(raw, a_normal.quad);
+			const float length = std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]);
+			if (!std::isfinite(length) || length < 1e-4f) {
+				return 90.0f;
+			}
+			const float cos = std::clamp(raw[2] / length, -1.0f, 1.0f);
+			return std::acos(cos) / kRadiansPerDegree;
+		}
 
 		RayResult Raycast(const char* a_label, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to, std::uint32_t a_filter)
 		{
@@ -311,56 +326,104 @@ namespace BlinkDash
 			result.hit = pick.rayOutput.HasHit();
 			result.fraction = result.hit ? pick.rayOutput.hitFraction : 1.0f;
 			result.point = result.hit ? (a_from + (a_to - a_from) * pick.rayOutput.hitFraction) : a_to;
-			BD("  ray[{}]: hasHit={} fraction={:.4f} point={} pickFailed={}",
-				a_label, result.hit, result.fraction, Fmt(result.point), pick.pickFailed);
+			result.slopeDegrees = result.hit ? SlopeFromNormal(pick.rayOutput.normal) : 90.0f;
+			BD("  ray[{}]: hasHit={} fraction={:.4f} point={} slope={:.1f}deg pickFailed={}",
+				a_label, result.hit, result.fraction, Fmt(result.point), result.slopeDegrees, pick.pickFailed);
 			return result;
 		}
 
-		// Casts the two body-height obstacle rays and returns the nearest fraction, with
-		// the geometry captured for the debug view.
-		float ObstacleFraction(RE::PlayerCharacter* a_player, const RE::NiPoint3& a_feet, const RE::NiPoint3& a_direction, float a_distance, std::uint32_t a_filter, Debug::Snapshot& a_snapshot)
+		bool Walkable(float a_slopeDegrees, float a_maxSlope)
 		{
-			const float heights[] = { kChestHeight, kHeadHeight };
-			const char* labels[] = { "chest", "head" };
+			return a_slopeDegrees <= a_maxSlope;
+		}
+
+		void AddSegment(Debug::Snapshot& a_snapshot, const char* a_label, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to, const RayResult& a_ray, bool a_walked = false)
+		{
+			if (a_snapshot.count >= Debug::Snapshot::kMaxSegments) {
+				return;
+			}
+			auto& segment = a_snapshot.segments[a_snapshot.count++];
+			segment.from = a_from;
+			segment.to = a_ray.hit ? a_ray.point : a_to;
+			segment.hit = a_ray.hit;
+			segment.walked = a_walked;
+			segment.slopeDegrees = a_ray.slopeDegrees;
+			segment.fraction = a_ray.fraction;
+			segment.label = a_label;
+		}
+
+		// The obstacle rays, one per body height, and the nearest fraction that is
+		// actually solid. A hit is classified by the surface angle: ground shallow
+		// enough to walk on is not an obstacle, the blink goes over it and the landing
+		// follows the surface, while anything steeper blocks like a wall, so a cliff
+		// stops the blink instead of being climbed. Returns 2.0 when the path is clear.
+		float PathFraction(const RE::NiPoint3& a_feet, const RE::NiPoint3& a_direction, float a_distance,
+			std::uint32_t a_filter, float a_maxSlope, Debug::Snapshot& a_snapshot)
+		{
+			static_assert(std::size(kPathHeights) == std::size(kPathLabels));
 
 			float nearest = 2.0f;
-			for (std::size_t i = 0; i < std::size(heights); ++i) {
-				const RE::NiPoint3 from = a_feet + RE::NiPoint3{ 0.0f, 0.0f, heights[i] };
+			for (std::size_t i = 0; i < std::size(kPathHeights); ++i) {
+				const RE::NiPoint3 from = a_feet + RE::NiPoint3{ 0.0f, 0.0f, kPathHeights[i] };
 				const RE::NiPoint3 to = from + a_direction * a_distance;
-				const auto ray = Raycast(labels[i], from, to, a_filter);
-				AddSegment(a_snapshot, labels[i], from, to, ray.point, ray.hit, ray.fraction);
+				const auto ray = Raycast(kPathLabels[i], from, to, a_filter);
+				const bool walked = ray.hit && Walkable(ray.slopeDegrees, a_maxSlope);
+				AddSegment(a_snapshot, kPathLabels[i], from, to, ray, walked);
+				if (walked) {
+					++a_snapshot.walked;
+					BD("  path[{}]: hit a {:.1f}deg surface at {:.1f} units, shallow enough to blink over",
+						kPathLabels[i], ray.slopeDegrees, a_distance * ray.fraction);
+					continue;
+				}
 				if (ray.hit) {
 					nearest = (std::min)(nearest, ray.fraction);
 				}
 			}
-			UNUSED(a_player);
 			return nearest;
 		}
 
-		// True when the body volume at a_center is clear of geometry: short sideways
-		// probes at two heights, shorter than the character radius so that merely
-		// standing near a wall does not trip it, only landing inside one does. The
-		// forward direction is deliberately not probed: the obstacle rays own that axis,
-		// and probing it again would reject the "wall right in front, blink what is left"
-		// case that the shortened travel exists for.
-		bool BodyFits(const RE::NiPoint3& a_center, const RE::NiPoint3& a_direction, std::uint32_t a_filter, Debug::Snapshot& a_snapshot, const char* a_label)
+		// True when the body volume at a_center is clear of geometry: rays out from the
+		// body centre in a circle and at four heights, each shorter than the character
+		// radius so that merely standing next to a wall is not an overlap. Probing out
+		// from the centre is what catches a landing inside a boulder: a ray that starts
+		// inside a shape can miss its back faces, a ray that reaches it from outside
+		// cannot. Only hits are recorded, the clean probes are noise.
+		bool BodyFits(const RE::NiPoint3& a_center, const RE::NiPoint3& a_direction, std::uint32_t a_filter,
+			float a_maxSlope, Debug::Snapshot& a_snapshot, const char* a_label)
 		{
-			const RE::NiPoint3 right{ a_direction.y, -a_direction.x, 0.0f };
-			const RE::NiPoint3 directions[] = { a_direction * -1.0f, right, right * -1.0f };
-			const char* names[] = { "back", "right", "left" };
-
 			for (const float height : kBodyProbeHeights) {
 				const RE::NiPoint3 from = a_center + RE::NiPoint3{ 0.0f, 0.0f, height };
-				for (std::size_t i = 0; i < std::size(directions); ++i) {
-					const RE::NiPoint3 to = from + directions[i] * kBodyProbeLength;
+				for (int i = 0; i < kBodyProbeDirections; ++i) {
+					const float angle = kTwoPi * static_cast<float>(i) / static_cast<float>(kBodyProbeDirections);
+					const float c = std::cos(angle);
+					const float s = std::sin(angle);
+					const RE::NiPoint3 outward{ a_direction.x * c - a_direction.y * s,
+						a_direction.x * s + a_direction.y * c, 0.0f };
+					const RE::NiPoint3 to = from + outward * kBodyProbeLength;
 					const auto ray = Raycast(a_label, from, to, a_filter);
-					AddSegment(a_snapshot, a_label, from, to, ray.point, ray.hit, ray.fraction);
-					if (ray.hit) {
-						BD("  fit: {} of the landing is blocked at height {:.0f} (fraction {:.3f})",
-							names[i], height, ray.fraction);
-						return false;
+					if (!ray.hit) {
+						continue;
 					}
+					if (Walkable(ray.slopeDegrees, a_maxSlope)) {
+						AddSegment(a_snapshot, a_label, from, to, ray, true);
+						++a_snapshot.walked;
+						continue;
+					}
+					AddSegment(a_snapshot, a_label, from, to, ray);
+					BD("  fit: the landing is blocked at height {:.0f}, {:.0f}deg surface {:.1f} units out",
+						height, ray.slopeDegrees, kBodyProbeLength * ray.fraction);
+					return false;
 				}
+			}
+
+			// A ceiling below the body height is an overlap no sideways probe can see.
+			const RE::NiPoint3 low = a_center + RE::NiPoint3{ 0.0f, 0.0f, kBodyProbeHeights[0] };
+			const RE::NiPoint3 top = a_center + RE::NiPoint3{ 0.0f, 0.0f, kBodyProbeTop };
+			const auto ceiling = Raycast(a_label, low, top, a_filter);
+			AddSegment(a_snapshot, a_label, low, top, ceiling);
+			if (ceiling.hit) {
+				BD("  fit: a ceiling {:.1f} units above the feet is in the way", kBodyProbeTop * ceiling.fraction);
+				return false;
 			}
 			return true;
 		}
@@ -369,19 +432,21 @@ namespace BlinkDash
 		{
 			RE::NiPoint3 point{};
 			float        delta{ 0.0f };   // landed z minus the reference z
+			float        slopeDegrees{ 90.0f };
 			bool         hit{ false };
 		};
 
-		GroundProbe ProbeGround(const RE::NiPoint3& a_reference, std::uint32_t a_filter, Debug::Snapshot& a_snapshot, const char* a_label)
+		GroundProbe ProbeGround(const RE::NiPoint3& a_reference, std::uint32_t a_filter, Debug::Snapshot& a_snapshot, const char* a_label, float a_up)
 		{
-			const RE::NiPoint3 start{ a_reference.x, a_reference.y, a_reference.z + kGroundProbeUp };
-			const RE::NiPoint3 end = start - RE::NiPoint3{ 0.0f, 0.0f, kGroundProbeUp + kGroundProbeDown };
+			const RE::NiPoint3 start{ a_reference.x, a_reference.y, a_reference.z + a_up };
+			const RE::NiPoint3 end = start - RE::NiPoint3{ 0.0f, 0.0f, a_up + kGroundProbeDown };
 			const auto ray = Raycast(a_label, start, end, a_filter);
-			AddSegment(a_snapshot, a_label, start, end, ray.point, ray.hit, ray.fraction);
+			AddSegment(a_snapshot, a_label, start, end, ray);
 
 			GroundProbe probe;
 			probe.hit = ray.hit;
 			probe.point = ray.hit ? ray.point : end;
+			probe.slopeDegrees = ray.slopeDegrees;
 			probe.delta = probe.point.z + kGroundLift - a_reference.z;
 			return probe;
 		}
@@ -550,12 +615,15 @@ namespace BlinkDash
 				BD("blink[{}] raw collision filter = 0x{:08X}", a_seq, rawFilter);
 			}
 			const auto rayFilter = BuildRayFilter(rawFilter);
+			const float maxSlope = std::clamp(settings.maxSlope, 20.0f, 80.0f);
+			const float slopeTan = std::tan(maxSlope * kRadiansPerDegree);
 
 			// --- obstacle rays ------------------------------------------------------
 			// The distance is a maximum: whatever the rays find shortens the travel, it
-			// never turns a blink into a no-op.
-			BD("blink[{}] --- obstacle rays (chest +{:.0f}, head +{:.0f}) ---", a_seq, kChestHeight, kHeadHeight);
-			const float nearest = ObstacleFraction(player, feet, direction.dir, distance, rayFilter, snapshot);
+			// never turns a blink into a no-op. Only surfaces too steep to walk on count
+			// as obstacles, so a hill keeps the whole distance while a cliff blocks it.
+			BD("blink[{}] --- obstacle rays ({} heights, slope limit {:.0f}deg) ---", a_seq, std::size(kPathHeights), maxSlope);
+			const float nearest = PathFraction(feet, direction.dir, distance, rayFilter, maxSlope, snapshot);
 			const bool blocked = nearest <= 1.0f;
 
 			float travel = distance;
@@ -574,14 +642,67 @@ namespace BlinkDash
 				BD("blink[{}] path is clear, landing at the full distance", a_seq);
 			}
 
-			// --- destination body fit ------------------------------------------------
+			// Standing on something is what decides whether the landing height is taken
+			// from the ground: mid air the height is kept, so a blink during a jump keeps
+			// the jump instead of being dragged down to the floor.
+			const auto underFeet = ProbeGround(feet, rayFilter, snapshot, "ground-here", kGroundProbeUp);
+			const bool grounded = underFeet.hit && std::abs(underFeet.delta) <= kGroundedTolerance;
+			BD("blink[{}] standing on ground={} (probe hit={} delta={:.1f})", a_seq, grounded, underFeet.hit, underFeet.delta);
+			snapshot.grounded = grounded;
+
+			float landingZ = feet.z;
+			const char* heightSource = grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
+
+			// --- landing: ground under it, then the body volume ---------------------
+			// The ground is probed first so the body fit runs at the height the player
+			// would really stand at: probing a slope at the old feet height would put the
+			// probes inside the hill and reject every landing on it.
 			RE::NiPoint3 landing{};
 			int pulls = 0;
 			for (;;) {
 				landing = feet + direction.dir * travel;
 				landing.z = feet.z;
+
+				// A slope at the configured limit climbs this much over the blink, so the
+				// band the landing may climb scales with the distance; a fixed band would
+				// read a hill as a ledge.
+				const float climbBand = std::clamp(travel * slopeTan + kGroundLift, kMaxSnapUp, kMaxClimbFollow);
+				landingZ = feet.z;
+				heightSource = grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
+				if (grounded) {
+					auto ground = ProbeGround(landing, rayFilter, snapshot, "ground", kGroundProbeUp);
+					if (!ground.hit) {
+						// Nothing within reach means the ground is either above the probe or
+						// a long way down. Only then look higher, so a bridge over flat
+						// ground - which the first probe finds from below - is never read as
+						// a hill to climb onto.
+						ground = ProbeGround(landing, rayFilter, snapshot, "ground-high", kGroundProbeUp + climbBand);
+					}
+					snapshot.groundHit = ground.hit;
+					snapshot.groundSlopeDegrees = ground.slopeDegrees;
+					if (ground.hit && Walkable(ground.slopeDegrees, maxSlope) && ground.delta >= -kMaxSnapDown && ground.delta <= climbBand) {
+						landingZ = ground.point.z + kGroundLift;
+						const bool sloped = ground.slopeDegrees > 2.0f && std::abs(ground.delta) > 2.0f;
+						heightSource = sloped ? "followed the slope" : (std::abs(ground.delta) < 2.0f ? "ground snap (level)" : "ground snap");
+						snapshot.slopeFollowed = sloped;
+						BD("blink[{}] ground snap: delta {:.1f} units, surface {:.1f}deg (band {:.1f}), landing z {:.1f}",
+							a_seq, ground.delta, ground.slopeDegrees, climbBand, landingZ);
+					} else if (ground.hit && !Walkable(ground.slopeDegrees, maxSlope)) {
+						BDW("blink[{}] the ground under the landing is {:.1f}deg, too steep to stand on, staying at z {:.1f}",
+							a_seq, ground.slopeDegrees, feet.z);
+					} else if (ground.hit) {
+						BDW("blink[{}] ground is {:.1f} units away, too far to snap, staying at z {:.1f}", a_seq, ground.delta, feet.z);
+					} else {
+						BD("blink[{}] no ground under the landing spot, keeping the current height", a_seq);
+					}
+				} else {
+					BD("blink[{}] airborne, keeping the current height (no snap)", a_seq);
+				}
+				landing.z = landingZ;
+
+				const char* fitLabel = pulls == 0 ? "fit" : "fit-retry";
 				BD("blink[{}] fit check #{} at {} (travel {:.1f})", a_seq, pulls, Fmt(landing), travel);
-				if (BodyFits(landing, direction.dir, rayFilter, snapshot, pulls == 0 ? "fit" : "fit-retry")) {
+				if (BodyFits(landing, direction.dir, rayFilter, maxSlope, snapshot, fitLabel)) {
 					break;
 				}
 				if (pulls >= kMaxFitPulls || travel <= kMinTravel) {
@@ -593,34 +714,6 @@ namespace BlinkDash
 				snapshot.shortened = true;
 				BDW("blink[{}] landing overlapped geometry, stepping back to {:.1f}", a_seq, travel);
 			}
-
-			// --- ground ---------------------------------------------------------------
-			// Snapping only happens when the player is standing on something. Mid air the
-			// height is kept, so a blink during a jump keeps the jump instead of being
-			// dragged down to the floor. Standing still, the usual snap applies.
-			const auto underFeet = ProbeGround(feet, rayFilter, snapshot, "ground-here");
-			const bool grounded = underFeet.hit && std::abs(underFeet.delta) <= kGroundedTolerance;
-			BD("blink[{}] standing on ground={} (probe hit={} delta={:.1f})", a_seq, grounded, underFeet.hit, underFeet.delta);
-			snapshot.grounded = grounded;
-
-			float landingZ = feet.z;
-			const char* heightSource = grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
-			if (grounded) {
-				const auto ground = ProbeGround(landing, rayFilter, snapshot, "ground");
-				snapshot.groundHit = ground.hit;
-				if (ground.hit && ground.delta >= -kMaxSnapDown && ground.delta <= kMaxSnapUp) {
-					landingZ = ground.point.z + kGroundLift;
-					heightSource = std::abs(ground.delta) < 2.0f ? "ground snap (level)" : "ground snap";
-					BD("blink[{}] ground snap: delta {:.1f} units, landing z {:.1f}", a_seq, ground.delta, landingZ);
-				} else if (ground.hit) {
-					BDW("blink[{}] ground is {:.1f} units away, too far to snap, staying at z {:.1f}", a_seq, ground.delta, feet.z);
-				} else {
-					BD("blink[{}] no ground under the landing spot, keeping the current height", a_seq);
-				}
-			} else {
-				BD("blink[{}] airborne, keeping the current height (no snap)", a_seq);
-			}
-			landing.z = landingZ;
 
 			const float travelled = (landing - feet).Length();
 			BD("blink[{}] travel from the feet = {:.1f} (minimum {:.1f})", a_seq, travelled, kMinTravel);
@@ -696,13 +789,16 @@ namespace BlinkDash
 			snapshot.requested = distance;
 			snapshot.travel = travel;
 			snapshot.pulls = pulls;
+			snapshot.climb = landing.z - feet.z;
 			snapshot.summary = std::format(
-				"blink #{}  {}  dir {}  source {}\nrequested {:.0f}  travel {:.0f}  blocked {}  pulls {}  height {}",
+				"blink #{}  {}  dir {}  source {}\nrequested {:.0f}  travel {:.0f}  blocked {}  pulls {}  height {}\nslope limit {:.0f}deg  landing surface {:.1f}deg  walked over {}  climb {:+.0f}",
 				a_seq, grounded ? "on ground" : "airborne", Fmt(direction.dir), direction.source,
-				distance, travel, blocked, pulls, heightSource);
+				distance, travel, blocked, pulls, heightSource,
+				maxSlope, snapshot.groundSlopeDegrees, snapshot.walked, snapshot.climb);
 			snapshot.headline = std::format(
-				"blink #{} {}  travel {:.0f}/{:.0f}  blocked {}  pulls {}  dir {}  src {}",
-				a_seq, grounded ? "ground" : "air", travel, distance, blocked, pulls, Fmt(direction.dir), direction.source);
+				"blink #{} {}  travel {:.0f}/{:.0f}  blocked {}  pulls {}  slope {:.0f}deg  climbed {:+.0f}",
+				a_seq, grounded ? "ground" : "air", travel, distance, blocked, pulls,
+				snapshot.groundSlopeDegrees, snapshot.climb);
 			Debug::Record(std::move(snapshot));
 
 			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} blocked={} height={} from={} to={}",

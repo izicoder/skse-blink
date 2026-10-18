@@ -11,6 +11,7 @@ namespace BlinkDash
 		float         staminaCost{ 10.0f };   // stamina drained per blink, 0 = free
 		float         retriggerDelay{ 0.20f };  // seconds: press AND release must be shorter than this, otherwise nothing happens
 		float         cooldown{ 0.0f };        // seconds between blinks; 0 = off, every tap may blink
+		float         maxSlope{ 45.0f };       // degrees: ground steeper than this counts as a wall, not as a slope to blink along
 		std::string   effectShader{ "Skyrim.esm:000E5C" };  // effect shader to play on blink: "plugin:FORMID" from BlinkDash.ShaderNames.json, or "None"
 		bool          debugOverlay{ false };  // draw the last blink's rays and landing spot in the menu
 	};

@@ -10,24 +10,30 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 
 - **Blink hotkey** (default: **Mouse 4**). Hold a direction (WASD or stick) and **tap** the hotkey: the blink
   goes the way you are pushing. Hold nothing, or stand still, and nothing happens.
-- **Collision detection**: Havok rays at chest and head height find the first wall/obstacle in the blink
-  path, and a body-volume probe at the landing spot catches the corners a single line can slip past. The
-  configured distance is a **maximum**: whatever the rays find shortens the blink instead of cancelling it.
+- **Collision detection**: Havok rays at six body heights (ankle to head) find the first wall/obstacle in the
+  blink path, and a body-volume probe at the landing spot catches the corners a single line can slip past.
+  The configured distance is a **maximum**: whatever the rays find shortens the blink instead of cancelling it.
   Close up against geometry there is a **deadzone** (50 units) where the blink refuses outright, which is
   what stops a spammed hotkey from creeping through a wall a few units at a time.
+- **Slope handling**: every hit is classified by its surface angle. Ground shallower than the **max slope**
+  setting (45° by default) is not an obstacle: the blink keeps its full distance and the landing follows the
+  surface up or down the hill. Anything steeper - a cliff, a wall, a rock face - is solid, so the blink stops
+  at it instead of climbing it, and refuses outright if it is inside the deadzone.
 - **Momentum**: the velocity the character controller had before the teleport is put straight back
   afterwards, so blinking in mid air keeps the jump and the dash going instead of stopping dead.
 - **Ground snap**: only while you are standing on something. A blink in mid air keeps your height, so a
-  jump is not dragged back down to the floor.
+  jump is not dragged back down to the floor. On the ground the landing is placed on the surface under it,
+  following a slope when there is one.
 - **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
   No ESP, no new records, no sound.
 - **Stamina cost** (charged in combat only), a **tap window** and an optional **cooldown** (default 0,
   i.e. off) between blinks.
-- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, tap window, the
-  effect shader dropdown and a debug view, each with a one line explanation, plus a Reset defaults button.
-  There is no Test blink and no Save/Apply: every change saves itself.
+- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, max slope, stamina cost, tap window,
+  the effect shader dropdown and a debug view, each with a one line explanation, plus a Reset defaults
+  button. There is no Test blink and no Save/Apply: every change saves itself.
 - **Debug view** (off by default): draws the last blink's rays and landing spot, so a "why did it clip that
-  wall" question can be answered by looking instead of by reading a log.
+  wall" question can be answered by looking instead of by reading a log. It hides itself while a menu is
+  open, so the game's own cursor stays visible.
 - Settings persist to `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2).
 - Works without SKSE Menu Framework installed (menu is skipped, hotkey still works).
 
@@ -159,6 +165,7 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 |---|---|
 | Hotkey | Mouse 4 (`0x103`) |
 | Distance | 300 units |
+| Max slope | 45° (steeper ground counts as a wall) |
 | Stamina cost | 10 (charged in combat only) |
 | Retrigger delay | 200 ms |
 | Cooldown | 0 ms (off) |
@@ -179,9 +186,11 @@ shorten the travel when something is in the way, and only give up when there is 
 
 There is no `enabled`, `mode`, `minDistance` or `groundSnap` option any more.
 Clearance (40), the shortest blink (10), the **deadzone** (clearance + shortest = 50 units: inside it the
-blink refuses), the two obstacle ray heights (64 / 120), the body probe (24 units at 48 / 120), the
-step-back (25 units, 8 tries), the ground snap band (+/-256 units) and the "standing on ground" tolerance
-(32 units) are internal constants.
+blink refuses), the six obstacle ray heights (8 / 32 / 56 / 80 / 104 / 128), the body probe (28 units in a
+full circle at 16 / 48 / 80 / 112, plus a ceiling probe), the step-back (25 units, 8 tries), the ground
+snap band (down 256 units, up scaled to the blink length and the slope limit) and the "standing on ground"
+tolerance (32 units) are internal constants. `maxSlope` is the only one exposed, because it is the one
+that depends on taste and on the terrain you play in.
 
 ## Why a blink can refuse
 
@@ -200,14 +209,19 @@ Logged with the reason every time:
 
 Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn **in game,
 in the top left of the screen**, where it can be read while playing: blink, look, blink again. Nothing is
-drawn in the menu itself. It is a labelled panel:
+drawn in the menu itself, and the overlay removes itself while the game is paused or a menu is open, so it
+never covers the cursor. It is a labelled panel:
 
-- a title line and two rows of numbers: travel taken vs requested, blocked or not, how many times the body
-  fit had to step the landing back, the direction, and whether the ground was snapped or the height kept,
-- a **plan view** (north up, `N` marked, with a scale bar): the chest/head rays in green when clear and red
-  when they hit, orange for a body probe that found something, blue ticks for the vertical ground probes,
-  a yellow square for where you were and a blue one for where you land,
-- a legend and the list of what actually hit, with how far along each ray.
+- a title line and three rows of numbers: travel taken vs requested, blocked or not, how many times the body
+  fit had to step the landing back, the direction, whether the ground was snapped or the height kept, the
+  slope limit, the angle of the surface under the landing and how far the blink climbed,
+- a **plan view** (north marked with an arrow, on a grid, with a scale bar): the body height rays in green
+  when clear, red when they hit something solid and amber when they hit a slope the blink walked over,
+  orange for a body probe that hit, blue ticks for the vertical ground probes, purple for a ceiling that
+  blocked the landing, a teal arrow for the direction you were pushing, a yellow square for where you were
+  and a blue one for where you land,
+- a colour-swatch legend and the list of what actually hit, with each segment's surface angle and how far
+  along the ray it was.
 
 It is drawn through the menu framework's HUD element hook with plain 2D drawing in the corner of the screen:
 no camera maths, no world projection, nothing that can disagree with what the rays actually did.
