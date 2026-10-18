@@ -256,19 +256,15 @@ namespace BlinkDash::UI
 			Hint("Puts every setting above back to its default.");
 		}
 
-		// Top-down picture of the last blink in world XY, drawn straight into the menu
-		// window's draw list. No camera, no projection, nothing that can go wrong if the
-		// in-game view is odd - it is a plan view of where the rays went.
-		void RenderBlinkDiagram(const Debug::Snapshot& a_snapshot)
+		// The plan view of a blink: world XY, north up, scaled to fit the box. Shared by
+		// the menu panel and the in-game overlay.
+		void DrawBlinkDiagram(ImGui::ImDrawList* a_drawList, const Debug::Snapshot& a_snapshot, const ImGui::ImVec2 a_origin, float a_size)
 		{
-			const float size = (std::min)(320.0f, ImGui::GetContentRegionAvail().x);
-			auto* drawList = ImGui::GetWindowDrawList();
-			if (!drawList || size < 60.0f) {
+			if (!a_drawList || a_size < 60.0f) {
 				return;
 			}
 
-			const ImGui::ImVec2 origin = ImGui::GetCursorScreenPos();
-			const ImGui::ImVec2 boxMax{ origin.x + size, origin.y + size };
+			const ImGui::ImVec2 boxMax{ a_origin.x + a_size, a_origin.y + a_size };
 
 			float minX = a_snapshot.feet.x;
 			float maxX = minX;
@@ -287,38 +283,93 @@ namespace BlinkDash::UI
 				include(a_snapshot.segments[i].to);
 			}
 
-			// North (+y) points up, and the whole thing is scaled to fit the box.
 			const float span = (std::max)((std::max)(maxX - minX, maxY - minY), 1.0f);
 			const float pad = 10.0f;
-			const float usable = size - pad * 2.0f;
+			const float usable = a_size - pad * 2.0f;
 			const auto project = [&](const RE::NiPoint3& a_point) {
 				const float px = pad + (a_point.x - minX) / span * usable;
-				const float py = size - pad - (a_point.y - minY) / span * usable;
-				return ImGui::ImVec2{ origin.x + px, origin.y + py };
+				const float py = a_size - pad - (a_point.y - minY) / span * usable;
+				return ImGui::ImVec2{ a_origin.x + px, a_origin.y + py };
 			};
 
-			ImGui::ImDrawListManager::AddRectFilled(drawList, origin, boxMax, IM_COL32(16, 16, 20, 230), 4.0f, 0);
+			ImGui::ImDrawListManager::AddRectFilled(a_drawList, a_origin, boxMax, IM_COL32(16, 16, 20, 210), 4.0f, 0);
 
 			for (std::size_t i = 0; i < a_snapshot.count; ++i) {
 				const auto& segment = a_snapshot.segments[i];
 				const auto  colour = segment.hit ? IM_COL32(230, 90, 90, 255) : IM_COL32(110, 220, 120, 255);
-				ImGui::ImDrawListManager::AddLine(drawList, project(segment.from), project(segment.to), colour, 2.0f);
+				ImGui::ImDrawListManager::AddLine(a_drawList, project(segment.from), project(segment.to), colour, 2.0f);
 			}
 
 			const auto feet = project(a_snapshot.feet);
 			const auto landing = project(a_snapshot.landing);
-			ImGui::ImDrawListManager::AddLine(drawList, feet, landing, IM_COL32(255, 255, 255, 200), 2.0f);
+			ImGui::ImDrawListManager::AddLine(a_drawList, feet, landing, IM_COL32(255, 255, 255, 200), 2.0f);
 
 			const auto dot = [&](const ImGui::ImVec2 a_at, ImGui::ImU32 a_colour) {
-				ImGui::ImDrawListManager::AddRectFilled(drawList,
+				ImGui::ImDrawListManager::AddRectFilled(a_drawList,
 					ImGui::ImVec2{ a_at.x - 3.0f, a_at.y - 3.0f },
 					ImGui::ImVec2{ a_at.x + 3.0f, a_at.y + 3.0f },
 					a_colour, 0.0f, 0);
 			};
 			dot(feet, IM_COL32(255, 220, 90, 255));
 			dot(landing, IM_COL32(90, 200, 255, 255));
+		}
 
+		// Menu version: the diagram sits in the panel, so reserve its space too.
+		void RenderBlinkDiagram(const Debug::Snapshot& a_snapshot)
+		{
+			const float size = (std::min)(320.0f, ImGui::GetContentRegionAvail().x);
+			DrawBlinkDiagram(ImGui::GetWindowDrawList(), a_snapshot, ImGui::GetCursorScreenPos(), size);
 			ImGui::Dummy(ImGui::ImVec2{ size, size });
+		}
+
+		// In-game version: the same diagram in the top left corner of the screen, drawn on
+		// the HUD so it can be read while playing. Registered as a HUD element, so it runs
+		// during the framework's render pass with the game still live.
+		void __stdcall RenderDebugOverlay()
+		{
+			if (!Config::Get().debugOverlay) {
+				return;
+			}
+
+			static std::atomic<int> frames{ 0 };
+			const int frame = frames.fetch_add(1) + 1;
+
+			Debug::Snapshot snapshot;
+			if (!Debug::Latest(snapshot)) {
+				return;
+			}
+
+			auto* io = ImGui::GetIO();
+			auto* drawList = ImGui::GetForegroundDrawList();
+			if (!io || !drawList) {
+				if (frame <= 3) {
+					BDW("overlay: framework handed over no io/draw list, nothing to draw on");
+				}
+				return;
+			}
+			if (frame <= 3) {
+				BD("overlay: frame {} display {:.0f}x{:.0f}, {} segments recorded",
+					frame, io->DisplaySize.x, io->DisplaySize.y, snapshot.count);
+			}
+
+			constexpr float kTextSize = 240.0f;
+			const ImGui::ImVec2 origin{ 24.0f, 24.0f };
+
+			ImGui::ImDrawListManager::AddText(drawList, origin, IM_COL32(255, 255, 255, 235), snapshot.headline.c_str());
+			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ origin.x, origin.y + 20.0f }, kTextSize);
+
+			float y = origin.y + 20.0f + kTextSize + 6.0f;
+			int   shown = 0;
+			for (std::size_t i = 0; i < snapshot.count && shown < 4; ++i) {
+				const auto& segment = snapshot.segments[i];
+				if (!segment.hit) {
+					continue;
+				}
+				++shown;
+				const auto text = std::format("{} hit  frac {:.2f}", segment.label, segment.fraction);
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ origin.x, y }, IM_COL32(240, 150, 150, 230), text.c_str());
+				y += 16.0f;
+			}
 		}
 
 		void RenderDebug(float a_itemWidth)
@@ -329,7 +380,7 @@ namespace BlinkDash::UI
 				BD("ui: debugOverlay -> {}", settings.debugOverlay);
 				MarkChanged("debugOverlay");
 			}
-			Hint("Top down view of the last blink: red segments hit something, green ones are clear.");
+			Hint("Draws the last blink's rays, landing spot and ground probes in the top left of the screen while you play, and as a panel below. Red segments hit something, green ones are clear.");
 
 			if (!settings.debugOverlay) {
 				return;
@@ -452,6 +503,7 @@ namespace BlinkDash::UI
 
 		std::unique_ptr<SKSEMenuFramework::Model::InputEvent> inputEvent;
 		std::unique_ptr<SKSEMenuFramework::Model::Event>      menuEvent;
+		std::unique_ptr<SKSEMenuFramework::Model::HudElement> overlayElement;
 
 		// A slider that was still being dragged when the menu closes would otherwise
 		// lose its debounced write.
@@ -488,6 +540,9 @@ namespace BlinkDash::UI
 
 		menuEvent = std::unique_ptr<SKSEMenuFramework::Model::Event>(SKSEMenuFramework::AddEvent(&OnMenuEvent, 0.0f));
 		BD("ui: menu event hook registered (0x{:X})", reinterpret_cast<std::uintptr_t>(menuEvent.get()));
+
+		overlayElement = std::unique_ptr<SKSEMenuFramework::Model::HudElement>(SKSEMenuFramework::AddHudElement(&RenderDebugOverlay));
+		BD("ui: debug overlay hook registered (0x{:X})", reinterpret_cast<std::uintptr_t>(overlayElement.get()));
 
 		BDI("ui: Register() end");
 	}

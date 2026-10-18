@@ -34,7 +34,8 @@ namespace BlinkDash::Debug
 		float        requested{ 0.0f };
 		float        travel{ 0.0f };
 		int          pulls{ 0 };
-		std::string  summary;
+		std::string  headline;  // one line, for the in-game overlay
+		std::string  summary;   // two lines, for the menu
 	};
 
 	void Record(Snapshot a_snapshot);

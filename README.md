@@ -176,11 +176,16 @@ ground" tolerance (32 units) are internal constants.
 
 ## Debug view
 
-Tick **Draw what the last blink probed** in the menu's Debug section and it draws a top-down picture of the
-last blink: the obstacle rays (red when they hit something, green when they are clear), the direction, the
-landing spot and the ground probes, plus the numbers the blink used. It is drawn inside the menu window, so
-it works with no camera maths and nothing to go wrong in game; blink once, open the menu, and look at what
-the rays actually did.
+Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn as a plan
+view - north up, the obstacle rays in red when they hit something and green when they are clear, the body
+fit probes, the direction and the landing spot, with the numbers that produced them:
+
+- **In game**, in the top left corner of the screen, so it can be read while playing - blink, look, blink
+  again. It appears through the menu framework's HUD element hook, so the game keeps running normally.
+- **In the menu**, in the Debug section, as a panel.
+
+Both are drawn with plain 2D drawing inside the framework's own render pass: no camera maths, no world
+projection, nothing that can disagree with what the rays actually did.
 
 ## Known crash (fixed by removal)
 

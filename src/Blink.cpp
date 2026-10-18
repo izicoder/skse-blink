@@ -626,6 +626,9 @@ namespace BlinkDash
 				"blink #{}  {}  dir {}  source {}\nrequested {:.0f}  travel {:.0f}  blocked {}  pulls {}  height {}",
 				a_seq, grounded ? "on ground" : "airborne", Fmt(direction.dir), direction.source,
 				distance, travel, blocked, pulls, heightSource);
+			snapshot.headline = std::format(
+				"blink #{} {}  travel {:.0f}/{:.0f}  blocked {}  pulls {}  dir {}  src {}",
+				a_seq, grounded ? "ground" : "air", travel, distance, blocked, pulls, Fmt(direction.dir), direction.source);
 			Debug::Record(std::move(snapshot));
 
 			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} blocked={} height={} from={} to={}",
