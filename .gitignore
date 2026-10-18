@@ -2,6 +2,9 @@
 build/
 out/
 
+# Release archives staged for upload
+packages/
+
 # Local vcpkg checkout (cloned by CMake on first configure)
 .vcpkg/
 

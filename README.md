@@ -97,6 +97,36 @@ e.g. a git-ignored `CMakeUserPresets.json`:
 }
 ```
 
+## Releasing
+
+The archive that goes on Nexus is built and uploaded by two scripts in `tools/`; both talk to
+Nexus Mods' official **Upload API (v3)**, so a release is one command and nothing touches the
+website. Get an API key from [your API keys page](https://www.nexusmods.com/settings/api-keys)
+and put it in `NEXUSMODS_API_KEY`.
+
+```powershell
+# 1. build the archive: SKSE/Plugins (DLL + both JSONs) and docs/, as packages/BlinkDash-<version>.zip
+.\tools\Package.ps1 -Version 1.0.0
+
+# 2a. first release of the mod: add the archive as a new file
+.\tools\Publish-Nexus.ps1 -Version 1.0.0 -ModId <mod id> -UpdateModVersion
+
+# 2b. every release after that: add it as a new version of the existing file
+.\tools\Publish-Nexus.ps1 -Version 1.0.1 -ModId <mod id> -FileId <file id> `
+	-UpdateModVersion -Changelog "Fixed the landing offset on slopes."
+```
+
+- **Mod id** is the number in the mod page URL (`…/skyrimspecialedition/mods/**123456**`).
+- **File id** is the v3 id of the file this release updates — the *update chain* id shown under
+  the **Advanced** option on the mod's Files tab. Keep using the same one for every release.
+- The script creates an upload session, PUTs the zip to the returned presigned URL (with the
+  `Content-Disposition`/`Content-MD5` headers the signature requires), finalises it, waits for
+  the file to become available, then creates the file/version and the changelog.
+
+The API can only add files to a mod that already exists, so the mod page and its **first** file
+are still created by hand on the site; everything after that is automated. Archives over 100 MiB
+would need the multipart endpoints, which the script does not use (BlinkDash is well under it).
+
 ## Direction
 
 The mod reads the game's control map for the keys bound to Forward/Back/Strafe, plus the left stick, and
