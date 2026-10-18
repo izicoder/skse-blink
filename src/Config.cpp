@@ -10,11 +10,11 @@ namespace BlinkDash
 		// kMaxDistanceCap: anything outside is silently capped at blink time, so it is
 		// reported and clamped here instead.
 		constexpr float kMinDistance = 100.0f;
-		constexpr float kMaxDistance = 2020.0f;
-		constexpr float kMaxStaminaCost = 1000.0f;
+		constexpr float kMaxDistance = 1000.0f;
+		constexpr float kMaxStaminaCost = 100.0f;
 		constexpr float kMinRetrigger = 0.02f;   // below this a human cannot tap it anyway
-		constexpr float kMaxRetrigger = 2.0f;
-		constexpr float kMaxCooldown = 5.0f;
+		constexpr float kMaxRetrigger = 1.0f;
+		constexpr float kMaxCooldown = 2.0f;
 		constexpr float kMinSlope = 20.0f;       // below this even stairs would be treated as walls
 		constexpr float kMaxSlope = 80.0f;
 
@@ -50,6 +50,7 @@ namespace BlinkDash
 				{ "maxSlope", a_settings.maxSlope },
 				{ "effectShader", a_settings.effectShader },
 				{ "debugOverlay", a_settings.debugOverlay },
+				{ "logging", a_settings.logging },
 			};
 		}
 	}
@@ -64,10 +65,10 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) maxSlope={:.0f}deg effectShader='{}' debugOverlay={}",
+			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) maxSlope={:.0f}deg effectShader='{}' debugOverlay={} logging={}",
 			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
 			s.cooldown, s.cooldown * 1000.0f, s.maxSlope,
-			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay);
+			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay, s.logging);
 	}
 
 	std::filesystem::path Config::Path()
@@ -167,7 +168,7 @@ namespace BlinkDash
 			auto& s = Get();
 			for (const auto& [key, value] : json.items()) {
 				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay" || key == "cooldown" ||
-					key == "maxSlope" || key == "effectShader" || key == "debugOverlay") {
+					key == "maxSlope" || key == "effectShader" || key == "debugOverlay" || key == "logging") {
 					BD("config:   {} = {}", key, value.dump());
 				} else {
 					BDW("config:   ignoring obsolete option '{}' = {}", key, value.dump());
@@ -198,8 +199,12 @@ namespace BlinkDash
 			if (json.contains("debugOverlay")) {
 				s.debugOverlay = json.at("debugOverlay").get<bool>();
 			}
+			if (json.contains("logging")) {
+				s.logging = json.at("logging").get<bool>();
+			}
 
 			Validate();
+			Log::SetEnabled(s.logging);
 			BDI("config: loaded from {}", path.string());
 			BDI("config: active values: {}", Describe());
 		} catch (const std::exception& e) {

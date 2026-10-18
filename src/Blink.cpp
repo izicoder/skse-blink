@@ -17,7 +17,7 @@ namespace BlinkDash
 	namespace
 	{
 		// Internal tuning that is not exposed in the menu.
-		constexpr float kMaxDistanceCap = 2020.0f;
+		constexpr float kMaxDistanceCap = 1000.0f;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 10.0f;        // shortest blink worth doing
 		// No blink at all when the nearest obstacle is inside this: it is what stops a

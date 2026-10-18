@@ -19,7 +19,7 @@ namespace BlinkDash::UI
 		// Config::Validate, so the slider can never ask for more than the blink will
 		// actually travel.
 		constexpr float kMinDistance = 100.0f;
-		constexpr float kMaxDistance = 2020.0f;
+		constexpr float kMaxDistance = 1000.0f;
 		constexpr float kMaxStaminaCost = 100.0f;
 		constexpr float kMinTapWindowMs = 20.0f;
 		constexpr float kMaxTapWindowMs = 1000.0f;
@@ -36,13 +36,11 @@ namespace BlinkDash::UI
 		// Reset wipes every setting, so the second click has to land inside this window.
 		constexpr float kResetConfirmSeconds = 4.0f;
 
-		constexpr float kHintIndent = 14.0f;
-
 		// The plan view keeps a floor under its span, so a ten unit blink does not zoom in
 		// until the 24 unit body probes look like full length rays.
 		constexpr float kMinDiagramSpan = 120.0f;
 
-		constexpr ImGui::ImVec4 kHintColor{ 0.62f, 0.62f, 0.62f, 1.0f };
+		// Body text for the menu: one colour for the readouts, one for the values.
 		constexpr ImGui::ImVec4 kValueColor{ 0.80f, 0.90f, 1.00f, 1.0f };
 		constexpr ImGui::ImVec4 kWarnColor{ 1.00f, 0.80f, 0.30f, 1.0f };
 
@@ -84,20 +82,12 @@ namespace BlinkDash::UI
 			SaveNow(a_reason);
 		}
 
-		// Dim, wrapped body text. Anything the user does not have to read to use the
-		// menu (explanations, caveats) is written this way so the controls stand out.
-		void Paragraph(const char* a_text)
+		// One line of body text, in one colour, for readouts like the last blink's summary.
+		void Body(const char* a_text)
 		{
-			ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kHintColor);
+			ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kValueColor);
 			ImGui::TextWrapped("%s", a_text);
 			ImGui::PopStyleColor();
-		}
-
-		void Hint(const char* a_text)
-		{
-			ImGui::Indent(kHintIndent);
-			Paragraph(a_text);
-			ImGui::Unindent(kHintIndent);
 		}
 
 		// Config stores the hotkey the way SKSE::InputMap numbers keys (a keyboard
@@ -180,7 +170,7 @@ namespace BlinkDash::UI
 			}
 
 			const auto label = HotkeyLabel(a_hotkey);
-			ImGui::Text("Hotkey:");
+			ImGui::Text("Blink hotkey (tap):");
 			ImGui::SameLine();
 			ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kValueColor);
 			ImGui::Text("%s", label.c_str());
@@ -190,8 +180,6 @@ namespace BlinkDash::UI
 				BDI("ui: Rebind pressed, waiting for input");
 				capturing.store(true);
 			}
-
-			Hint("Tap to blink: press and release the hotkey. Holding it down does nothing, so sprint or jump keys are safe.");
 		}
 
 		void RenderEffectShader(float a_itemWidth, Settings& a_settings)
@@ -206,18 +194,11 @@ namespace BlinkDash::UI
 			EnsureEffectLabels();
 			int current = CurrentEffectIndex();
 			ImGui::SetNextItemWidth(a_itemWidth);
-			if (ImGui::Combo("Effect shader", &current, labelPtrs.data(), static_cast<int>(labelPtrs.size()))) {
+			if (ImGui::Combo("Effect shader on blink", &current, labelPtrs.data(), static_cast<int>(labelPtrs.size()))) {
 				a_settings.effectShader = (current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key();
 				BDI("ui: effect shader changed -> '{}'", a_settings.effectShader);
 				Effects::RefreshSelection();
 				SaveNow("effect shader changed");
-			}
-
-			const auto selection = Effects::DescribeSelection();
-			if (selection == "none") {
-				Hint("No effect plays right now. Pick a shader above, or leave it on None for a silent blink.");
-			} else {
-				Hint(std::format("Playing {} when you blink.", selection).c_str());
 			}
 		}
 
@@ -240,6 +221,7 @@ namespace BlinkDash::UI
 						BD("ui: Reset defaults cancelled the active hotkey capture");
 					}
 					Effects::RefreshSelection();
+					Log::SetEnabled(a_settings.logging);
 					SaveNow("reset defaults");
 
 					BDI("ui: Reset defaults done (now: {}), effect selection is now '{}'",
@@ -260,8 +242,6 @@ namespace BlinkDash::UI
 					BD("ui: Reset defaults cancelled");
 				}
 			}
-
-			Hint("Puts every setting above back to its default.");
 		}
 
 		// Which family a recorded segment belongs to, so the drawing can tell them apart.
@@ -583,11 +563,10 @@ namespace BlinkDash::UI
 		{
 			UNUSED(a_itemWidth);
 			auto& settings = Config::Get();
-			if (ImGui::Checkbox("Draw what the last blink probed", &settings.debugOverlay)) {
+			if (ImGui::Checkbox("Draw last blink in game", &settings.debugOverlay)) {
 				BD("ui: debugOverlay -> {}", settings.debugOverlay);
 				MarkChanged("debugOverlay");
 			}
-			Hint("Draws the last blink in game, top left of the screen, while you play: the rays, the landing spot, the ground probes and the numbers. Nothing is drawn here, and the overlay hides itself while the game is paused or a menu is open so nothing covers the cursor.");
 
 			Debug::Snapshot snapshot;
 			if (Debug::Latest(snapshot)) {
@@ -595,9 +574,9 @@ namespace BlinkDash::UI
 				ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kValueColor);
 				ImGui::TextUnformatted("Last blink");
 				ImGui::PopStyleColor();
-				Paragraph(snapshot.summary.c_str());
+				Body(snapshot.summary.c_str());
 			} else {
-				Hint("No blink has been recorded yet.");
+				Body("No blink recorded yet.");
 			}
 		}
 
@@ -613,64 +592,60 @@ namespace BlinkDash::UI
 			// One width for every control, so the labels line up down the page.
 			const float itemWidth = (std::max)(200.0f, ImGui::GetContentRegionAvail().x * 0.5f);
 
-			Paragraph("Blink dashes you a short way in the direction you are pushing (WASD or the movement stick).");
-			Paragraph("Hold a direction, then tap the hotkey. Standing still it blinks where you face.");
-
 			ImGui::SeparatorText("Activation");
 			RenderHotkey(settings.hotkey);
 
 			ImGui::SeparatorText("Blink");
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Blink distance (units)", &settings.distance, kMinDistance, kMaxDistance, "%.0f")) {
+			if (ImGui::SliderFloat("Blink distance, max (units)", &settings.distance, kMinDistance, kMaxDistance, "%.0f")) {
 				BD("ui: distance -> {:.0f}", settings.distance);
 				MarkChanged("distance");
 			}
-			Hint("How far one blink travels. Walls shrink it before you reach the target.");
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Max slope (deg)", &settings.maxSlope, kMinSlopeDeg, kMaxSlopeDeg, "%.0f")) {
+			if (ImGui::SliderFloat("Max climbable slope (deg)", &settings.maxSlope, kMinSlopeDeg, kMaxSlopeDeg, "%.0f")) {
 				BD("ui: maxSlope -> {:.0f}", settings.maxSlope);
 				MarkChanged("maxSlope");
 			}
-			Hint("Ground steeper than this counts as a wall: the blink stops at it instead of climbing it. Shallower ground is followed for the whole distance, up the hill or down it.");
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Stamina cost", &settings.staminaCost, 0.0f, kMaxStaminaCost, "%.0f")) {
+			if (ImGui::SliderFloat("Stamina cost per blink (combat)", &settings.staminaCost, 0.0f, kMaxStaminaCost, "%.0f")) {
 				BD("ui: staminaCost -> {:.0f}", settings.staminaCost);
 				MarkChanged("staminaCost");
 			}
-			Hint("Stamina drained per blink, and only while you are in combat. 0 blinks for free.");
 
 			ImGui::SetNextItemWidth(itemWidth);
 			float tapWindowMs = settings.retriggerDelay * 1000.0f;
-			if (ImGui::SliderFloat("Tap window (ms)", &tapWindowMs, kMinTapWindowMs, kMaxTapWindowMs, "%.0f")) {
+			if (ImGui::SliderFloat("Tap window, press+release (ms)", &tapWindowMs, kMinTapWindowMs, kMaxTapWindowMs, "%.0f")) {
 				settings.retriggerDelay = tapWindowMs / 1000.0f;
 				BD("ui: retriggerDelay -> {:.0f}ms ({:.3f}s)", tapWindowMs, settings.retriggerDelay);
 				MarkChanged("retriggerDelay");
 			}
-			Hint("The hotkey has to be pressed and released inside this window to count as a tap.");
 
 			ImGui::SetNextItemWidth(itemWidth);
 			float cooldownMs = settings.cooldown * 1000.0f;
-			if (ImGui::SliderFloat("Cooldown (ms)", &cooldownMs, kMinCooldownMs, kMaxCooldownMs, "%.0f")) {
+			if (ImGui::SliderFloat("Cooldown between blinks (ms)", &cooldownMs, kMinCooldownMs, kMaxCooldownMs, "%.0f")) {
 				settings.cooldown = cooldownMs / 1000.0f;
 				BD("ui: cooldown -> {:.0f}ms ({:.3f}s)", cooldownMs, settings.cooldown);
 				MarkChanged("cooldown");
 			}
-			Hint("How long to wait after a successful blink before the next one. 0 lets every tap blink.");
 
 			ImGui::SeparatorText("Effect");
-			Paragraph("A vanilla effect shader played on you when you blink. No ESP, no new records.");
 			RenderEffectShader(itemWidth, settings);
+
+			ImGui::SeparatorText("Diagnostics");
+			if (ImGui::Checkbox("Write BlinkDash.log", &settings.logging)) {
+				BD("ui: logging -> {}", settings.logging);
+				Log::SetEnabled(settings.logging);
+				MarkChanged("logging");
+			}
+			RenderDebug(itemWidth);
 
 			ImGui::SeparatorText("Reset");
 			RenderReset(settings);
 
-			ImGui::SeparatorText("Debug");
-			RenderDebug(itemWidth);
-
 			ImGui::Spacing();
-			Paragraph("Every change saves itself; there is nothing to apply.");
+			Body("Every change saves itself.");
 
 			FlushPendingSave(false, "slider settled");
 		}

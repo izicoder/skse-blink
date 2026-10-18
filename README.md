@@ -30,14 +30,16 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
   which is instant death (see below).
 - **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
   No ESP, no new records, no sound.
-- **Stamina cost** (charged in combat only), a **tap window** and an optional **cooldown** (default 0,
-  i.e. off) between blinks.
+- **Stamina cost** (charged in combat only), a **tap window** and a **cooldown** (default 1 s) between
+  blinks.
 - **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, max slope, stamina cost, tap window,
-  the effect shader dropdown and a debug view, each with a one line explanation, plus a Reset defaults
-  button. There is no Test blink and no Save/Apply: every change saves itself.
+  cooldown, the effect shader dropdown, a logging toggle and a debug view, plus a Reset defaults button.
+  There is no Test blink and no Save/Apply: every change saves itself.
 - **Debug view** (off by default): draws the last blink's rays and landing spot, so a "why did it clip that
   wall" question can be answered by looking instead of by reading a log. It hides itself while a menu is
   open, so the game's own cursor stays visible.
+- **Logging** (on by default): a checkbox in the Diagnostics section silences `BlinkDash.log` completely if
+  you would rather not have it written.
 - Settings persist to `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2).
 - Works without SKSE Menu Framework installed (menu is skipped, hotkey still works).
 
@@ -60,7 +62,7 @@ Everything comes off the input the mod itself collects, so the keyboard and the 
   any of them).
 - The hotkey is **tap to blink**: press and release inside the retrigger delay (default 200 ms) fires one
   blink. Holding it longer does nothing, so it is safe to put on sprint or jump. After a blink that actually
-  happened, the optional **cooldown** (default 0) has to pass before the next tap is accepted.
+  happened, the **cooldown** (default 1 s) has to pass before the next tap is accepted.
 - Blinks are queued from the input thread and executed on a game thread.
 
 ## What the blink touches
@@ -118,7 +120,9 @@ exactly what crashed the old build through `Actor::IsInBleedout`, whose AE slot 
 ## Logging
 
 Every single step of the plugin is logged at **trace** level and the log is **flushed after every line**,
-so the last line in the file is the last line that actually ran before a crash.
+so the last line in the file is the last line that actually ran before a crash. Logging is **on by default**;
+untick **Write BlinkDash.log** in the menu's Diagnostics section (or set `"logging": false` in
+`BlinkDash.json`) to silence it completely. The plugin runs the same either way.
 
 Log file:
 
@@ -168,13 +172,14 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 | Setting | Default |
 |---|---|
 | Hotkey | Mouse 4 (`0x103`) |
-| Distance | 300 units |
+| Distance (max) | 200 units |
 | Max slope | 45° (steeper ground counts as a wall) |
 | Stamina cost | 10 (charged in combat only) |
-| Retrigger delay | 200 ms |
-| Cooldown | 0 ms (off) |
+| Retrigger delay (tap window) | 200 ms |
+| Cooldown | 1000 ms (1 s) |
 | Effect shader | `Skyrim.esm:000E5C` (Nightingale invisibility) |
 | Debug view | off |
+| Logging | on |
 
 `BlinkDash.json` is written with these defaults on first run and is **not** overwritten by builds, so your
 saved settings survive.
@@ -184,9 +189,11 @@ button n (dpad up/down/left/right, start, back, thumb clicks, shoulders, A/B/X/Y
 DirectInput keyboard scancode. That is the same numbering SKSE's `InputMap` uses, so the menu shows the
 engine's own key name, `Mouse 4`, or `Gamepad A`.
 
-Distance is clamped to 100..2020 units, loaded or typed: 2020 is the hard cap the blink itself applies, so
+Distance is clamped to 100..1000 units, loaded or typed: 1000 is the hard cap the blink itself applies, so
 the setting can no longer ask for travel that will never happen. It is a maximum, not a promise: the rays
-shorten the travel when something is in the way, and only give up when there is no room left at all.
+shorten the travel when something is in the way, and only give up when there is no room left at all. The
+other sliders are bounded the same way: stamina cost 0..100, max slope 20..80°, tap window 20..1000 ms and
+cooldown 0..2000 ms.
 
 There is no `enabled`, `mode`, `minDistance` or `groundSnap` option any more.
 Clearance (40), the shortest blink (10), the **deadzone** (clearance + shortest = 50 units: inside it the
@@ -238,7 +245,7 @@ blink[121] the blink caught a fall that was already 1136.4 units deep (damage fr
 
 ## Debug view
 
-Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn **in game,
+Tick **Draw last blink in game** in the menu's Diagnostics section and the last blink is drawn **in game,
 in the top left of the screen**, where it can be read while playing: blink, look, blink again. Nothing is
 drawn in the menu itself, and the overlay removes itself while the game is paused or a menu is open, so it
 never covers the cursor. It is a labelled panel:

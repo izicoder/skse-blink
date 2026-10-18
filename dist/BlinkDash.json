@@ -1,7 +1,11 @@
 ﻿{
+    "cooldown": 1.0,
+    "debugOverlay": false,
+    "distance": 200.0,
+    "effectShader": "Skyrim.esm:000E5C",
     "hotkey": 259,
-    "distance": 300.0,
-    "staminaCost": 10.0,
+    "logging": true,
+    "maxSlope": 45.0,
     "retriggerDelay": 0.2,
-    "effectShader": "Skyrim.esm:000E5C"
+    "staminaCost": 10.0
 }

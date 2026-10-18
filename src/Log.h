@@ -106,6 +106,22 @@ namespace BlinkDash::Log
 		BDI("======================================================================");
 	}
 
+	// The logging setting: off silences the file completely, on restores the trace level
+	// and the per-line flush. The plugin still runs either way.
+	inline void SetEnabled(bool a_enabled)
+	{
+		const auto level = a_enabled ? spdlog::level::trace : spdlog::level::off;
+		try {
+			if (auto logger = spdlog::default_logger()) {
+				logger->set_level(level);
+				logger->flush_on(level);
+			}
+			spdlog::set_level(level);
+			spdlog::flush_on(level);
+		} catch (...) {
+		}
+	}
+
 	inline void Banner()
 	{
 		BDI("BlinkDash boot sequence starting");
