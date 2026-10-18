@@ -84,8 +84,9 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
 - The blink re-bases `bhkCharacterController` fall state on landing (SkyParkour's mid-air roll would otherwise
   charge the interrupted fall as instant death). Be careful when touching position/velocity writes.
 - Settings live in `BlinkDash.json` **next to the DLL** and are intentionally never overwritten by the build.
-- Target runtime is currently **1.6.1170**; the plugin is built with multi-runtime support (`ENABLE_SKYRIM_SE`
-  + `ENABLE_SKYRIM_AE`).
+- Target runtime is **1.6.1170** (SKSE 2.2.8) and it is the **only** version the plugin has been tested on.
+  It is built with multi-runtime support (`ENABLE_SKYRIM_SE` + `ENABLE_SKYRIM_AE`), but no other runtime has
+  actually been run.
 
 ## Git
 

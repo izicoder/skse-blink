@@ -56,10 +56,14 @@ button *n*, otherwise a DirectInput keyboard scancode — the same numbering SKS
 
 ## Requirements
 
-- Skyrim SE/AE, tested on **1.6.1170**
+- Skyrim SE/AE
 - [SKSE](https://www.nexusmods.com/skyrimspecialedition/mods/30379)
 - [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444)
 - Optional: [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) for the settings UI
+
+> **Tested on 1.6.1170 only** (SKSE 2.2.8). That is the one and only runtime this has been run on — no other
+> version has been tried. It is built against the Address Library, so other Skyrim SE/AE builds may well work,
+> but that is a guess, not a promise.
 
 ## Install
 
