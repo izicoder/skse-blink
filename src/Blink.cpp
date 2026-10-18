@@ -9,12 +9,19 @@ namespace BlinkDash
 	namespace
 	{
 		// Internal tuning that is not exposed in the menu.
-		constexpr float kChestHeight = 64.0f;      // ray origin above the feet
+		constexpr float kChestHeight = 64.0f;      // lower obstacle ray above the feet
+		constexpr float kHeadHeight = 120.0f;      // upper obstacle ray above the feet
 		constexpr float kMaxDistanceCap = 2020.0f;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 30.0f;        // shorter than this is treated as "wedged into a wall"
 		constexpr float kInputDeadzone = 0.15f;    // movement input below this counts as "not holding a direction"
 		constexpr float kVelocityThreshold = 25.0f;  // units/second below this counts as standing still
+		constexpr float kGroundProbeUp = 120.0f;
+		constexpr float kGroundProbeDown = 600.0f;
+		constexpr float kGroundLift = 4.0f;        // land a hair above the floor
+		constexpr float kMaxSnapDown = 256.0f;     // further down than this = mid air, stay where we are
+		constexpr float kMaxSnapUp = 256.0f;       // further up than this = cliff, do not pop up
+		constexpr std::uintptr_t kMinPlausibleVtable = 0x10000;
 
 		// Dash gate: while true, new requests are ignored.
 		std::atomic<bool> blinkGate{ false };
@@ -277,13 +284,32 @@ namespace BlinkDash
 			const float now = Now();
 			BD("blink[{}] clock={:.3f}s", a_seq, now);
 
+			RE::ActorValueOwner* staminaOwner = nullptr;
+
 			if (settings.staminaCost > 0.0f) {
-				BD("blink[{}] stamina check: calling player->GetActorValue(kStamina)", a_seq);
-				const float stamina = player->GetActorValue(RE::ActorValue::kStamina);
-				BD("blink[{}] stamina={:.1f} cost={:.1f}", a_seq, stamina, settings.staminaCost);
-				if (stamina < settings.staminaCost) {
-					BD("blink[{}] REJECTED: not enough stamina", a_seq);
-					return false;
+				// NOTE: never call player->GetActorValue() / player->DamageActorValue()
+				// directly. Those use the ActorValueOwner base offset baked into the
+				// class layout (0x98 in this build), which does not match this runtime
+				// (0xB8 on 1.6.x) and crashed the game with a garbage vtable.
+				// AsActorValueOwner() is the runtime-versioned accessor and is correct.
+				BD("blink[{}] stamina: calling player->AsActorValueOwner()", a_seq);
+				auto* owner = player->AsActorValueOwner();
+				const auto ownerAddress = reinterpret_cast<std::uintptr_t>(owner);
+				const auto vtable = owner ? *reinterpret_cast<const std::uintptr_t*>(owner) : 0;
+				BD("blink[{}] stamina: owner=0x{:X} (player+0x{:X}) vtable=0x{:X}",
+					a_seq, ownerAddress, ownerAddress - reinterpret_cast<std::uintptr_t>(player), vtable);
+
+				if (owner == nullptr || vtable < kMinPlausibleVtable) {
+					BDE("blink[{}] stamina: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
+						a_seq, vtable);
+				} else {
+					const float stamina = owner->GetActorValue(RE::ActorValue::kStamina);
+					BD("blink[{}] stamina: current={:.1f} cost={:.1f}", a_seq, stamina, settings.staminaCost);
+					if (stamina < settings.staminaCost) {
+						BDI("blink[{}] REJECTED: not enough stamina", a_seq);
+						return false;
+					}
+					staminaOwner = owner;  // spent after the teleport, so a rejected blink is free
 				}
 			} else {
 				BD("blink[{}] no stamina cost configured, skipping the stamina check", a_seq);
@@ -299,9 +325,6 @@ namespace BlinkDash
 			BD("blink[{}] calling player->GetPosition()", a_seq);
 			const RE::NiPoint3 feet = player->GetPosition();
 			BD("blink[{}] feet position = {}", a_seq, Fmt(feet));
-
-			const RE::NiPoint3 rayStart = feet + RE::NiPoint3{ 0.0f, 0.0f, kChestHeight };
-			BD("blink[{}] ray start = {} (feet + {:.0f})", a_seq, Fmt(rayStart), kChestHeight);
 
 			const float distance = std::clamp(settings.distance, 0.0f, kMaxDistanceCap);
 			if (distance < kMinTravel) {
@@ -321,27 +344,63 @@ namespace BlinkDash
 			}
 			const auto rayFilter = BuildRayFilter(rawFilter);
 
-			BD("blink[{}] --- forward ray ---", a_seq);
-			const auto forward = Raycast("forward", rayStart, rayStart + direction.dir * distance, rayFilter);
-			BD("blink[{}] forward ray: hit={} fraction={:.4f} point={}",
-				a_seq, forward.hit, forward.fraction, Fmt(forward.point));
+			BD("blink[{}] --- obstacle rays (chest +{:.0f}, head +{:.0f}) ---", a_seq, kChestHeight, kHeadHeight);
+			const RE::NiPoint3 chestStart = feet + RE::NiPoint3{ 0.0f, 0.0f, kChestHeight };
+			const RE::NiPoint3 headStart = feet + RE::NiPoint3{ 0.0f, 0.0f, kHeadHeight };
+			const auto chest = Raycast("chest", chestStart, chestStart + direction.dir * distance, rayFilter);
+			BD("blink[{}] chest ray: hit={} fraction={:.4f} point={}", a_seq, chest.hit, chest.fraction, Fmt(chest.point));
+			const auto head = Raycast("head", headStart, headStart + direction.dir * distance, rayFilter);
+			BD("blink[{}] head ray: hit={} fraction={:.4f} point={}", a_seq, head.hit, head.fraction, Fmt(head.point));
 
-			RE::NiPoint3 landing = forward.point;
-			if (forward.hit) {
+			float nearest = 2.0f;
+			if (chest.hit) {
+				nearest = chest.fraction;
+			}
+			if (head.hit) {
+				nearest = (std::min)(nearest, head.fraction);
+			}
+			const bool blocked = nearest <= 1.0f;
+
+			RE::NiPoint3 landing = chestStart + direction.dir * (distance * (blocked ? nearest : 1.0f));
+			if (blocked) {
 				landing = landing - direction.dir * kClearance;
-				BD("blink[{}] wall hit, pulled back by clearance {:.0f} -> {}", a_seq, kClearance, Fmt(landing));
+				BD("blink[{}] blocked at fraction {:.4f}, pulled back by clearance {:.0f} -> {}",
+					a_seq, nearest, kClearance, Fmt(landing));
+			} else {
+				BD("blink[{}] path is clear, landing at the full distance", a_seq);
 			}
 
-			const float travel = (landing - rayStart).Length();
+			const float travel = (landing - chestStart).Length();
 			BD("blink[{}] travel from the ray start = {:.1f} (minimum {:.1f})", a_seq, travel, kMinTravel);
 			if (travel < kMinTravel) {
 				BDI("blink[{}] REJECTED: only {:.1f} units of room (wedged against geometry)", a_seq, travel);
 				return false;
 			}
 
-			// Horizontal blink: keep the current height, no ground probing at all.
-			landing.z = feet.z;
-			BD("blink[{}] landing point (height forced to the current feet height) = {}", a_seq, Fmt(landing));
+			// --- ground correction -------------------------------------------------
+			// Silent: it never rejects a blink, so blinking mid air still works.
+			// It only stops the character ending up inside the terrain.
+			float landingZ = feet.z;
+			const char* heightSource = "current height (no ground within range)";
+			const RE::NiPoint3 probeStart{ landing.x, landing.y, landing.z + kGroundProbeUp };
+			const auto ground = Raycast("ground", probeStart, probeStart - RE::NiPoint3{ 0.0f, 0.0f, kGroundProbeUp + kGroundProbeDown }, rayFilter);
+			BD("blink[{}] ground probe at ({:.1f}, {:.1f}): hit={} z={:.1f} (current feet z {:.1f})",
+				a_seq, landing.x, landing.y, ground.hit, ground.point.z, feet.z);
+			if (ground.hit) {
+				const float delta = (ground.point.z + kGroundLift) - feet.z;
+				if (delta >= -kMaxSnapDown && delta <= kMaxSnapUp) {
+					landingZ = ground.point.z + kGroundLift;
+					heightSource = std::abs(delta) < 2.0f ? "ground snap (level)" : "ground snap";
+					BD("blink[{}] ground snap: delta {:.1f} units, landing z {:.1f}", a_seq, delta, landingZ);
+				} else {
+					BDW("blink[{}] ground is {:.1f} units away, too far to snap, staying at z {:.1f}",
+						a_seq, delta, feet.z);
+				}
+			} else {
+				BD("blink[{}] no ground under the landing spot, keeping the current height (mid air blink)", a_seq);
+			}
+			landing.z = landingZ;
+			BD("blink[{}] landing point = {} ({})", a_seq, Fmt(landing), heightSource);
 
 			BD("blink[{}] calling player->SetPosition({}, true)", a_seq, Fmt(landing));
 			player->SetPosition(landing, true);
@@ -349,14 +408,14 @@ namespace BlinkDash
 			const RE::NiPoint3 after = player->GetPosition();
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
 
-			if (settings.staminaCost > 0.0f) {
-				BD("blink[{}] calling player->DamageActorValue(kStamina, {:.1f})", a_seq, settings.staminaCost);
-				player->DamageActorValue(RE::ActorValue::kStamina, settings.staminaCost);
-				BD("blink[{}] stamina after = {:.1f}", a_seq, player->GetActorValue(RE::ActorValue::kStamina));
+			if (staminaOwner) {
+				BD("blink[{}] stamina: calling ModActorValue(kDamage, kStamina, {:.1f})", a_seq, settings.staminaCost);
+				staminaOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, settings.staminaCost);
+				BD("blink[{}] stamina: after={:.1f}", a_seq, staminaOwner->GetActorValue(RE::ActorValue::kStamina));
 			}
 
-			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} wallHit={} from={} to={}",
-				a_seq, a_source, direction.source, travel, forward.hit, Fmt(feet), Fmt(after));
+			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} blocked={} height={} from={} to={}",
+				a_seq, a_source, direction.source, travel, blocked, heightSource, Fmt(feet), Fmt(after));
 			BD("blink[{}] ===== ExecuteBlink end =====", a_seq);
 			return true;
 		}
