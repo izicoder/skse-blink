@@ -6,6 +6,10 @@ Hold a movement direction and **tap** the hotkey to dash that way. Havok rays sh
 follow walkable slopes instead of clipping through them. No `.esp`, no Papyrus, no new records — the plugin
 plus an optional settings tab in [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352).
 
+> **AI-generated.** Every line of this plugin was written by an AI — purely vibe-coded, slopped together.
+> No human authored or thoroughly reviewed it, so treat it as a hobby project: expect rough edges, and check
+> it yourself before trusting it in your load order.
+
 ## Features
 
 - **Tap to blink.** Hold a direction (WASD or stick) and tap the hotkey; tap while standing still to blink

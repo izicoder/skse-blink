@@ -11,6 +11,9 @@ shader. A settings tab is exposed through the optional SKSE Menu Framework (`ext
 
 The game runs on Windows only, so all development, building and testing happens here.
 
+The entire codebase was written by an AI (vibe-coded, not human-authored or reviewed). Take the conventions
+below as the intended style to keep, not as proof of quality.
+
 ## Repo layout
 
 | Path | What it does |
