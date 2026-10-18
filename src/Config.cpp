@@ -39,6 +39,7 @@ namespace BlinkDash
 				{ "distance", a_settings.distance },
 				{ "staminaCost", a_settings.staminaCost },
 				{ "retriggerDelay", a_settings.retriggerDelay },
+				{ "effectShader", a_settings.effectShader },
 			};
 		}
 	}
@@ -53,8 +54,9 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms)",
-			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f);
+			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) effectShader='{}'",
+			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
+			s.effectShader.empty() ? "none" : s.effectShader);
 	}
 
 	std::filesystem::path Config::Path()
@@ -92,6 +94,11 @@ namespace BlinkDash
 			BDW("config: retriggerDelay {:.3f}s out of range, clamping to [{:.2f}, {:.2f}]",
 				s.retriggerDelay, kMinRetrigger, kMaxRetrigger);
 			s.retriggerDelay = std::clamp(s.retriggerDelay, kMinRetrigger, kMaxRetrigger);
+			changed = true;
+		}
+		if (s.effectShader.size() > 64) {
+			BDW("config: effectShader name is {} chars, truncating", s.effectShader.size());
+			s.effectShader.resize(64);
 			changed = true;
 		}
 
@@ -138,7 +145,7 @@ namespace BlinkDash
 
 			auto& s = Get();
 			for (const auto& [key, value] : json.items()) {
-				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay") {
+				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay" || key == "effectShader") {
 					BD("config:   {} = {}", key, value.dump());
 				} else {
 					BDW("config:   ignoring obsolete option '{}' = {}", key, value.dump());
@@ -156,6 +163,9 @@ namespace BlinkDash
 			}
 			if (json.contains("retriggerDelay")) {
 				s.retriggerDelay = json.at("retriggerDelay").get<float>();
+			}
+			if (json.contains("effectShader")) {
+				s.effectShader = json.at("effectShader").get<std::string>();
 			}
 
 			Validate();

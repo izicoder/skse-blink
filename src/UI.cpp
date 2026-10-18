@@ -2,6 +2,7 @@
 #include "UI.h"
 #include "Blink.h"
 #include "Config.h"
+#include "Effects.h"
 #include "Log.h"
 #include "SKSEMenuFramework.h"
 
@@ -20,6 +21,51 @@ namespace BlinkDash::UI
 
 		std::atomic<bool> capturing{ false };
 		std::atomic<int>  renderFrames{ 0 };
+
+		// Stable storage for the effect shader dropdown (ImGui keeps the pointers).
+		std::vector<std::string> labelStorage;
+		std::vector<const char*> labelPtrs;
+
+		void EnsureEffectLabels()
+		{
+			const auto& entries = Effects::Entries();
+			if (labelPtrs.size() == entries.size() + 1) {
+				return;
+			}
+
+			labelStorage.clear();
+			labelStorage.reserve(entries.size() + 1);
+			labelStorage.emplace_back("None");
+			for (const auto& entry : entries) {
+				if (entry.editorID.empty()) {
+					labelStorage.push_back(std::format("0x{:08X} ({})", entry.formID, entry.source));
+				} else {
+					labelStorage.push_back(std::format("{} (0x{:08X})", entry.editorID, entry.formID));
+				}
+			}
+
+			labelPtrs.clear();
+			labelPtrs.reserve(labelStorage.size());
+			for (auto& label : labelStorage) {
+				labelPtrs.push_back(label.c_str());
+			}
+			BDI("ui: effect shader dropdown built with {} entries", labelPtrs.size());
+		}
+
+		int CurrentEffectIndex()
+		{
+			const auto& want = Config::Get().effectShader;
+			if (want.empty()) {
+				return 0;
+			}
+			const auto& entries = Effects::Entries();
+			for (std::size_t i = 0; i < entries.size(); ++i) {
+				if (entries[i].Key() == want) {
+					return static_cast<int>(i) + 1;
+				}
+			}
+			return 0;
+		}
 
 		void __stdcall Render()
 		{
@@ -67,6 +113,25 @@ namespace BlinkDash::UI
 			if (ImGui::SliderFloat("Retrigger delay (ms)", &retriggerMs, kMinRetriggerMs, kMaxRetriggerMs, "%.0f")) {
 				settings.retriggerDelay = retriggerMs / 1000.0f;
 				BD("ui: retriggerDelay -> {:.0f}ms ({:.3f}s)", retriggerMs, settings.retriggerDelay);
+			}
+
+			ImGui::Separator();
+			ImGui::TextWrapped("Blink effect: a vanilla effect shader played on you when you blink. No ESP, no new records.");
+			if (!Effects::Available()) {
+				ImGui::Text("Effect shaders unavailable on this runtime.");
+			} else {
+				EnsureEffectLabels();
+				int current = CurrentEffectIndex();
+				if (ImGui::Combo("Effect shader", &current, labelPtrs.data(), static_cast<int>(labelPtrs.size()))) {
+					settings.effectShader = (current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key();
+					BDI("ui: effect shader changed -> '{}'", settings.effectShader);
+					Effects::RefreshSelection();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Preview")) {
+					BDI("ui: Preview effect pressed");
+					Effects::Preview();
+				}
 			}
 
 			ImGui::Spacing();

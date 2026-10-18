@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "Blink.h"
 #include "Config.h"
+#include "Effects.h"
 #include "Log.h"
 #include "SKSEMenuFramework.h"
 
@@ -416,6 +417,8 @@ namespace BlinkDash
 				staminaOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, drain);
 				BD("blink[{}] stamina: after={:.1f}", a_seq, staminaOwner->GetActorValue(RE::ActorValue::kStamina));
 			}
+
+			Effects::PlayOnPlayer("blink");
 
 			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} blocked={} height={} from={} to={}",
 				a_seq, a_source, direction.source, travel, blocked, heightSource, Fmt(feet), Fmt(after));

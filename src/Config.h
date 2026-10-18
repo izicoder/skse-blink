@@ -10,6 +10,7 @@ namespace BlinkDash
 		float         distance{ 300.0f };     // blink length in game units
 		float         staminaCost{ 10.0f };   // stamina drained per blink, 0 = free
 		float         retriggerDelay{ 0.20f };  // seconds: press AND release must be shorter than this, otherwise nothing happens
+		std::string   effectShader{};         // vanilla TESEffectShader to play on blink, by editor id (or 0xFORMID); empty = none
 	};
 
 	class Config

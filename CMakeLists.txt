@@ -55,6 +55,8 @@ set(SOURCES
 	src/Blink.cpp
 	src/Config.h
 	src/Config.cpp
+	src/Effects.h
+	src/Effects.cpp
 	src/Input.h
 	src/UI.h
 	src/UI.cpp

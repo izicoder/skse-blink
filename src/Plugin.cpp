@@ -2,6 +2,7 @@
 #include "Version.h"
 #include "Blink.h"
 #include "Config.h"
+#include "Effects.h"
 #include "Input.h"
 #include "Log.h"
 #include "UI.h"
@@ -9,6 +10,7 @@
 namespace
 {
 	std::atomic<bool> s_configLoaded{ false };
+	std::atomic<bool> s_effectsInit{ false };
 	std::atomic<bool> s_inputRegistered{ false };
 	std::atomic<bool> s_uiRegistered{ false };
 
@@ -52,6 +54,11 @@ namespace
 						BlinkDash::Config::Load();
 					} else {
 						BD("msg: config was already loaded, not loading twice");
+					}
+					if (!s_effectsInit.exchange(true)) {
+						BlinkDash::Effects::Init();
+					} else {
+						BD("msg: effects were already initialised, not doing it twice");
 					}
 					if (!s_inputRegistered.exchange(true)) {
 						BlinkDash::Input::Register();

@@ -2,5 +2,6 @@
     "hotkey": 259,
     "distance": 300.0,
     "staminaCost": 10.0,
-    "retriggerDelay": 0.2
+    "retriggerDelay": 0.2,
+    "effectShader": "<auto>"
 }

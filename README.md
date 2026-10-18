@@ -8,16 +8,44 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 
 ## Features
 
-- **Blink hotkey** (default: **Mouse 4**). Teleports you in your facing direction, up to a configurable distance.
-- **Collision detection**: a Havok raycast finds the first wall/obstacle in the blink path and stops you just
-  short of it (clearance), so you do not clip into geometry.
-- **Ground snap**: a downward ray puts you on the floor instead of mid-air.
-- **Two direction modes**: Facing / movement (default, horizontal only) or Camera aim.
-- **Cooldown** and optional **stamina cost**.
-- **SKSE Menu Framework tab** ("Blink Dash"): enable, hotkey rebind, mode, distance, cooldown, clearance,
-  min distance, ground snap, stamina cost, Save, **Test blink**, Reset defaults.
+- **Blink hotkey** (default: **Mouse 4**). Hold a direction (WASD or stick) and **tap** the hotkey: the blink
+  goes the way you are pushing.
+- **Collision detection**: two Havok rays (chest and head height) find the first wall/obstacle in the blink
+  path and stop you just short of it (clearance), so you do not clip into geometry.
+- **Ground snap**: a downward ray puts you on the floor instead of inside terrain. It is silent and banded
+  (+/-256 units), so blinking mid air keeps you mid air instead of rejecting the blink.
+- **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown and
+  previewable in the menu. No ESP, no new records, no sound.
+- **Stamina cost** and a **tap window** (see retrigger delay below).
+- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, retrigger delay,
+  effect shader dropdown, Preview, Save, Test blink, Reset defaults.
 - Settings persist to `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2).
 - Works without SKSE Menu Framework installed (menu is skipped, hotkey still works).
+
+## Direction and the tap window
+
+- The direction comes from the engine's own movement input (`PlayerControls::data.moveInputVec`, which is
+  what WASD and the gamepad stick produce) expressed in the camera yaw. When you are actually moving, the
+  horizontal velocity wins, since that is what the keys are really doing. Holding nothing = no blink.
+- The hotkey is **tap to blink**: press and release inside the retrigger delay (default 200 ms) fires one
+  blink. Holding it longer does nothing, so it is safe to put on sprint or jump.
+- Blinks are queued from the input thread and executed on a game thread.
+
+## Effects
+
+`effectShader` in the JSON takes an editor id (or `0xFORMID`) of a vanilla effect shader. `"<auto>"` picks a
+sensible one on first run and logs which; `"None"` disables it. At load the plugin logs the resolved
+`ApplyEffectShader` address and the full list of available shaders, e.g.
+
+```
+effects: ApplyEffectShader (RELOCATION_ID(19446, 19872)) resolved to 0x7FF7051E2B10
+effects: 214 TESEffectShader forms in the load order
+effects:   #0 'AbsorbBlueFX' 0x0001E0F0 (Skyrim.esm)
+```
+
+`ApplyEffectShader` is resolved by hand so the address can be checked before the first call: a `RELOCATION_ID`
+slot of 0 has no mapping for the current runtime and would be a jump into null (which is exactly what crashed
+the old build through `Actor::IsInBleedout`, whose AE slot is 0 in CommonLibSSE).
 
 ## Logging
 
@@ -75,6 +103,7 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 | Distance | 300 units |
 | Stamina cost | 10 |
 | Retrigger delay | 200 ms |
+| Effect shader | `<auto>` (first matching invisibility/teleport/summon style shader) |
 
 Hotkey encoding: `0x100 | n` = mouse button n (0=LMB, 1=RMB, 2=MMB, 3=MB4...), otherwise a DirectInput
 keyboard scancode.

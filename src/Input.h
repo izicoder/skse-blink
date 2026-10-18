@@ -81,41 +81,44 @@ namespace BlinkDash::Input
 					continue;
 				}
 
-				const auto nowTicks = std::chrono::steady_clock::now().time_since_epoch().count();
+				// ButtonEvent semantics (CommonLibSSE):
+				//   IsDown() = value > 0 AND heldDownSecs == 0  -> only the FIRST press event
+				//   IsHeld() = value > 0 AND heldDownSecs > 0   -> every repeat while held
+				//   IsUp()   = value == 0 AND heldDownSecs > 0  -> the release
+				// "not IsDown" therefore means "held repeat", not "released", so the
+				// press/release decision is made on Value() alone.
+				const auto  nowTicks = std::chrono::steady_clock::now().time_since_epoch().count();
+				const float value = button->Value();
+				const float held = button->HeldDuration();
 
-				if (button->IsDown()) {
-					const auto previous = pressTicks.load(std::memory_order_acquire);
-					if (previous == 0) {
+				if (value > 0.0f) {
+					if (held <= 0.0f) {
 						pressTicks.store(nowTicks, std::memory_order_release);
 						pressCount.fetch_add(1, std::memory_order_relaxed);
-						BDI("input: hotkey DOWN ({}), waiting for release within {:.0f}ms",
+						BDI("input: hotkey DOWN ({}), release within {:.0f}ms to blink",
 							Detail::DescribeCode(code), settings.retriggerDelay * 1000.0f);
-					} else if (Detail::SecondsSince(previous) > kStalePress) {
-						// the release event was lost (menu opened mid press, focus loss, ...)
-						BDW("input: hotkey was stuck down for {:.1f}s, restarting the press window",
-							Detail::SecondsSince(previous));
-						pressTicks.store(nowTicks, std::memory_order_release);
-					} else if (const int left = Detail::RawLogBudget().fetch_sub(1); left > 0) {
-						BD("input: hotkey repeat while held (held {:.3f}s)",
-							Detail::SecondsSince(previous));
+					} else if (held <= kRepeatLogWindow) {
+						BD("input: hotkey held repeat at {:.0f}ms (no blink while held)", held * 1000.0f);
 					}
 				} else {
-					const auto pressed = pressTicks.exchange(0, std::memory_order_acq_rel);
-					if (pressed == 0) {
-						BD("input: hotkey release without a recorded press, ignoring");
+					const auto  pressed = pressTicks.exchange(0, std::memory_order_acq_rel);
+					const bool  hadPress = pressed != 0;
+					const float heldTime = held > 0.0f ? held : (hadPress ? Detail::SecondsSince(pressed) : 0.0f);
+
+					if (!hadPress && held <= 0.0f) {
+						BD("input: hotkey release with neither a recorded press nor a held duration, ignoring");
 						continue;
 					}
 
-					const float held = Detail::SecondsSince(pressed);
-					if (held <= settings.retriggerDelay) {
+					if (heldTime <= settings.retriggerDelay) {
 						tapCount.fetch_add(1, std::memory_order_relaxed);
 						BDI("input: hotkey TAP (held {:.0f}ms <= {:.0f}ms window) -> RequestBlink",
-							held * 1000.0f, settings.retriggerDelay * 1000.0f);
+							heldTime * 1000.0f, settings.retriggerDelay * 1000.0f);
 						RequestBlink("hotkey-tap");
 					} else {
 						longHoldCount.fetch_add(1, std::memory_order_relaxed);
 						BDI("input: hotkey held {:.0f}ms > {:.0f}ms window, NOT blinking (sprint/jump style hold)",
-							held * 1000.0f, settings.retriggerDelay * 1000.0f);
+							heldTime * 1000.0f, settings.retriggerDelay * 1000.0f);
 					}
 				}
 			}
@@ -130,7 +133,9 @@ namespace BlinkDash::Input
 		}
 
 	private:
-		static constexpr float kStalePress = 5.0f;  // seconds after which a press is considered lost
+		// Held repeats are only logged for the first moments of a hold, so a sprint
+		// key does not turn the log into a firehose.
+		static constexpr float kRepeatLogWindow = 0.10f;
 
 		std::atomic<std::int64_t>  pressTicks{ 0 };
 		std::atomic<std::uint64_t> pressCount{ 0 };
