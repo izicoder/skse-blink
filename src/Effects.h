@@ -12,24 +12,38 @@ namespace BlinkDash::Effects
 		RE::FormID           runtimeFormID{ 0 };
 		std::string          name;         // from BlinkDash.ShaderNames.json, may be empty
 
-		bool disambiguate{ false };  // set when two entries would show the same label
-
-		// Stable identifier: plugin file name + form id inside that plugin, so it
-		// survives load order changes. This is what goes in the config.
+		// Value written to the config. Always stable across load order changes.
 		[[nodiscard]] std::string Key() const
 		{
 			return std::format("{}:{:06X}", plugin, localID);
+		}
+
+		enum class Suffix
+		{
+			kNone,     // unique label
+			kPlugin,   // same name exists in another plugin
+			kFormID    // same name exists in the same plugin
+		};
+		Suffix suffix{ Suffix::kNone };
+
+		// Label without any disambiguation suffix.
+		[[nodiscard]] std::string BaseLabel() const
+		{
+			return name.empty() ? Key() : name;
 		}
 
 		// What the dropdown shows: the name from the json when there is one,
 		// otherwise the key (i.e. an unnamed mod shader keeps its form id).
 		[[nodiscard]] std::string Label() const
 		{
-			std::string label = name.empty() ? Key() : name;
-			if (disambiguate) {
-				label += std::format(" ({})", plugin);
+			switch (suffix) {
+			case Suffix::kPlugin:
+				return std::format("{} ({})", BaseLabel(), plugin);
+			case Suffix::kFormID:
+				return std::format("{} (0x{:06X})", BaseLabel(), localID);
+			default:
+				return BaseLabel();
 			}
-			return label;
 		}
 	};
 

@@ -17,30 +17,9 @@ param(
 	[string] $Out = "dist\BlinkDash.ShaderNames.json"
 )
 
-# "InvisFXShaderNightingale" -> "Invis Nightingale", "DLC1DeathHoundFXS" -> "Death Hound".
-function Get-PrettyName {
-	param([string] $edid)
-
-	$n = $edid
-	$n = $n -replace '^DLC0?1(?=[A-Z])', ''
-	$n = $n -replace '^DLC0?2(?=[A-Z])', ''
-	$n = $n -replace '^(MAG|FX)(?=[A-Z])', ''
-	$n = $n -replace 'FXShader', ''
-	$n = $n -replace 'FXS', ''
-	$n = $n -replace 'Shader', ''
-	$n = $n -replace 'FX(?=\d*$)', ''
-	$n = $n -replace '_', ' '
-	# -creplace: PowerShell's -replace is case insensitive, which would make the
-	# camel case rules match between every pair of letters.
-	$n = $n -creplace '(?<=[a-z0-9])(?=[A-Z])', ' '
-	$n = $n -creplace '(?<=[A-Z])(?=[A-Z][a-z])', ' '
-	$n = $n -creplace '(?<=[A-Za-z])(?=\d)', ' '
-	$n = $n -replace '\s+', ' '
-	$n = $n.Trim()
-
-	if ([string]::IsNullOrWhiteSpace($n)) { return $edid }
-	return $n
-}
+# Raw editor ids from the game files, e.g. "InvisFXShaderNightingale",
+# "DLC1DeathHoundFXS", "FXSspiderSpitHit". No cleanup on purpose: these are the
+# names the records actually have.
 
 $latin1 = [System.Text.Encoding]::GetEncoding(28591)
 $map = [ordered]@{}
@@ -86,7 +65,7 @@ foreach ($file in $Files) {
 		$nul = $edid.IndexOf([char]0)
 		if ($nul -ge 0) { $edid = $edid.Substring(0, $nul) }
 		$key = "{0}:{1:X6}" -f $plugin, ($formID -band 0xFFFFFF)
-		$map[$key] = (Get-PrettyName $edid)
+		$map[$key] = $edid
 		$found++
 		$total++
 	}

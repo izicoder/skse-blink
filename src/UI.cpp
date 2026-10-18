@@ -19,8 +19,47 @@ namespace BlinkDash::UI
 		constexpr float kMinRetriggerMs = 20.0f;
 		constexpr float kMaxRetriggerMs = 1000.0f;
 
-		std::atomic<bool> capturing{ false };
-		std::atomic<int>  renderFrames{ 0 };
+		// Sliders fire every frame while dragging, so writes are debounced; anything
+		// discrete (checkbox, dropdown, rebind, reset) saves immediately, and a
+		// pending write is flushed when the menu closes.
+		constexpr float kSaveDebounce = 0.5f;
+
+		std::atomic<bool>         capturing{ false };
+		std::atomic<int>          renderFrames{ 0 };
+		std::atomic<bool>         pendingSave{ false };
+		std::atomic<std::int64_t> lastChangeTicks{ 0 };
+
+		float SecondsSince(std::int64_t a_ticks)
+		{
+			const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+			return static_cast<float>(now - a_ticks) / static_cast<float>(std::chrono::steady_clock::period::den) *
+				static_cast<float>(std::chrono::steady_clock::period::num);
+		}
+
+		void MarkChanged(const char* a_what)
+		{
+			lastChangeTicks.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+			pendingSave.store(true, std::memory_order_release);
+			BD("ui: {} changed, config will be saved", a_what);
+		}
+
+		void SaveNow(const char* a_reason)
+		{
+			pendingSave.store(false, std::memory_order_release);
+			BDI("ui: saving config ({}) values: {}", a_reason, Config::Describe());
+			Config::Save();
+		}
+
+		void FlushPendingSave(bool a_force, const char* a_reason)
+		{
+			if (!pendingSave.load(std::memory_order_acquire)) {
+				return;
+			}
+			if (!a_force && SecondsSince(lastChangeTicks.load(std::memory_order_acquire)) < kSaveDebounce) {
+				return;
+			}
+			SaveNow(a_reason);
+		}
 
 		// Stable storage for the effect shader dropdown (ImGui keeps the pointers).
 		std::vector<std::string> labelStorage;
@@ -98,9 +137,11 @@ namespace BlinkDash::UI
 
 			if (ImGui::SliderFloat("Distance (units)", &settings.distance, kMinDistance, kMaxDistance, "%.0f")) {
 				BD("ui: distance -> {:.0f}", settings.distance);
+				MarkChanged("distance");
 			}
 			if (ImGui::SliderFloat("Stamina cost", &settings.staminaCost, 0.0f, 100.0f, "%.0f")) {
 				BD("ui: staminaCost -> {:.0f}", settings.staminaCost);
+				MarkChanged("staminaCost");
 			}
 
 			ImGui::Spacing();
@@ -109,6 +150,7 @@ namespace BlinkDash::UI
 			if (ImGui::SliderFloat("Retrigger delay (ms)", &retriggerMs, kMinRetriggerMs, kMaxRetriggerMs, "%.0f")) {
 				settings.retriggerDelay = retriggerMs / 1000.0f;
 				BD("ui: retriggerDelay -> {:.0f}ms ({:.3f}s)", retriggerMs, settings.retriggerDelay);
+				MarkChanged("retriggerDelay");
 			}
 
 			ImGui::Separator();
@@ -122,15 +164,11 @@ namespace BlinkDash::UI
 					settings.effectShader = (current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key();
 					BDI("ui: effect shader changed -> '{}'", settings.effectShader);
 					Effects::RefreshSelection();
+					SaveNow("effect shader changed");
 				}
 			}
 
 			ImGui::Spacing();
-			if (ImGui::Button("Save")) {
-				BDI("ui: Save pressed, current values: {}", Config::Describe());
-				Config::Save();
-			}
-			ImGui::SameLine();
 			if (ImGui::Button("Test blink")) {
 				BDI("ui: Test blink pressed, queueing a blink request (still needs a held direction)");
 				RequestBlink("menu-test-button");
@@ -138,9 +176,26 @@ namespace BlinkDash::UI
 			ImGui::SameLine();
 			if (ImGui::Button("Reset defaults")) {
 				BDI("ui: Reset defaults pressed (was: {})", Config::Describe());
+
+				// Reset everything the menu owns, not just the config block: the hotkey
+				// capture and the resolved effect shader are separate state and would
+				// otherwise keep the old selection alive.
 				settings = Settings{};
-				BDI("ui: Reset defaults done (now: {})", Config::Describe());
+				if (capturing.exchange(false)) {
+					SKSEMenuFramework::SetHotkeyEnabled(true);
+					BD("ui: Reset defaults cancelled the active hotkey capture");
+				}
+				Effects::RefreshSelection();
+				SaveNow("reset defaults");
+
+				BDI("ui: Reset defaults done (now: {}), effect selection is now '{}'",
+					Config::Describe(), Effects::DescribeSelection());
 			}
+
+			ImGui::Spacing();
+			ImGui::TextWrapped("Everything saves automatically.");
+
+			FlushPendingSave(false, "slider settled");
 		}
 
 		// While capturing, listen to raw input via the framework's input hook.
@@ -168,7 +223,7 @@ namespace BlinkDash::UI
 				Config::Get().hotkey = code;
 				capturing.store(false);
 				SKSEMenuFramework::SetHotkeyEnabled(true);
-				Config::Save();
+				SaveNow("hotkey rebound");
 				BD("ui: hotkey capture finished, framework hotkey re-enabled");
 				return true;  // swallow
 			}
@@ -176,6 +231,17 @@ namespace BlinkDash::UI
 		}
 
 		std::unique_ptr<SKSEMenuFramework::Model::InputEvent> inputEvent;
+		std::unique_ptr<SKSEMenuFramework::Model::Event>      menuEvent;
+
+		// A slider that was still being dragged when the menu closes would otherwise
+		// lose its debounced write.
+		void __stdcall OnMenuEvent(SKSEMenuFramework::Model::EventType a_type)
+		{
+			if (a_type == SKSEMenuFramework::Model::kCloseMenu) {
+				BD("ui: menu closed");
+				FlushPendingSave(true, "menu closed");
+			}
+		}
 	}
 
 	void Register()
@@ -199,6 +265,9 @@ namespace BlinkDash::UI
 
 		inputEvent = std::make_unique<SKSEMenuFramework::Model::InputEvent>(&InputListener);
 		BD("ui: input event hook registered (0x{:X})", reinterpret_cast<std::uintptr_t>(inputEvent.get()));
+
+		menuEvent = std::unique_ptr<SKSEMenuFramework::Model::Event>(SKSEMenuFramework::AddEvent(&OnMenuEvent, 0.0f));
+		BD("ui: menu event hook registered (0x{:X})", reinterpret_cast<std::uintptr_t>(menuEvent.get()));
 
 		BDI("ui: Register() end");
 	}

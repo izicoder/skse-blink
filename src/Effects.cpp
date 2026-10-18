@@ -9,6 +9,8 @@ namespace BlinkDash::Effects
 	{
 		constexpr float kBlinkDuration = 0.35f;
 		constexpr const char* kNameFileName = "BlinkDash.ShaderNames.json";
+		// windows.h defines max() as a macro, hence the parentheses
+		constexpr std::size_t kNoSelection = (std::numeric_limits<std::size_t>::max)();
 
 		// TESObjectREFR::ApplyEffectShader -- RELOCATION_ID(19446, 19872).
 		// Resolved by hand (instead of calling the library wrapper) so the address can
@@ -24,8 +26,27 @@ namespace BlinkDash::Effects
 
 		std::vector<Entry>                          s_entries;
 		std::unordered_map<std::string, std::string> s_names;
-		const Entry*                                s_selected{ nullptr };
+		std::atomic<std::size_t>                    s_selectedIndex{ kNoSelection };
 		bool                                        s_available{ false };
+
+		const Entry* Selected()
+		{
+			const auto index = s_selectedIndex.load(std::memory_order_acquire);
+			if (index == kNoSelection || index >= s_entries.size()) {
+				return nullptr;
+			}
+			return &s_entries[index];
+		}
+
+		// Returns an index so concurrent menu edits and blink playback never race on
+		// a raw pointer.
+		std::size_t IndexOf(const Entry* a_entry)
+		{
+			if (!a_entry) {
+				return kNoSelection;
+			}
+			return static_cast<std::size_t>(a_entry - s_entries.data());
+		}
 
 		std::string ToLower(std::string_view a_text)
 		{
@@ -143,13 +164,24 @@ namespace BlinkDash::Effects
 		void MarkDuplicates()
 		{
 			for (auto& entry : s_entries) {
-				entry.disambiguate = false;
+				entry.suffix = Entry::Suffix::kNone;
 			}
+
+			// Group by the un-suffixed label: entries that would read the same get a
+			// plugin name, or a form id when even the plugin is the same.
 			for (std::size_t i = 0; i < s_entries.size(); ++i) {
 				for (std::size_t j = i + 1; j < s_entries.size(); ++j) {
-					if (s_entries[i].Label() == s_entries[j].Label()) {
-						s_entries[i].disambiguate = true;
-						s_entries[j].disambiguate = true;
+					if (s_entries[i].BaseLabel() != s_entries[j].BaseLabel()) {
+						continue;
+					}
+					const auto kind = EqualsIgnoreCase(s_entries[i].plugin, s_entries[j].plugin) ?
+						Entry::Suffix::kFormID :
+						Entry::Suffix::kPlugin;
+					if (s_entries[i].suffix == Entry::Suffix::kNone) {
+						s_entries[i].suffix = kind;
+					}
+					if (s_entries[j].suffix == Entry::Suffix::kNone) {
+						s_entries[j].suffix = kind;
 					}
 				}
 			}
@@ -168,40 +200,43 @@ namespace BlinkDash::Effects
 
 	std::string DescribeSelection()
 	{
-		if (!s_selected) {
+		const auto* selected = Selected();
+		if (!selected) {
 			return "none";
 		}
-		return std::format("{} [{}] (runtime form 0x{:08X})", s_selected->Label(), s_selected->Key(), s_selected->runtimeFormID);
+		return std::format("{} [{}] (runtime form 0x{:08X})", selected->Label(), selected->Key(), selected->runtimeFormID);
 	}
 
 	void RefreshSelection()
 	{
 		const auto& want = Config::Get().effectShader;
-		s_selected = nullptr;
 
 		if (want.empty() || want == "None") {
+			s_selectedIndex.store(kNoSelection, std::memory_order_release);
 			BDI("effects: selection is 'none'");
 			return;
 		}
 		if (!s_available) {
+			s_selectedIndex.store(kNoSelection, std::memory_order_release);
 			BDW("effects: shader '{}' is set in the config but effects are unavailable", want);
 			return;
 		}
 		if (const auto* found = FindByKey(want)) {
-			s_selected = found;
+			s_selectedIndex.store(IndexOf(found), std::memory_order_release);
 			BDI("effects: selection = {}", DescribeSelection());
 			return;
 		}
 
 		// Unknown key: probe the usual suspects so a first run is not silent. The
 		// menu overrides it.
-		s_selected = FirstMatching({ "invis", "blink", "teleport", "summon", "ghost" });
-		if (s_selected) {
+		if (const auto* probe = FirstMatching({ "invis", "blink", "teleport", "summon", "ghost" })) {
+			s_selectedIndex.store(IndexOf(probe), std::memory_order_release);
 			BDI("effects: '{}' is not a known shader, auto-picked {} - change it in the Skyrim Menu Framework -> Blink Dash",
 				want, DescribeSelection());
 			return;
 		}
 
+		s_selectedIndex.store(kNoSelection, std::memory_order_release);
 		BDW("effects: shader '{}' was not found, using none", want);
 		BDW("effects: {} shaders are available, pick one in the Skyrim Menu Framework -> Blink Dash", s_entries.size());
 	}
@@ -254,6 +289,11 @@ namespace BlinkDash::Effects
 		}
 
 		std::ranges::sort(s_entries, [](const Entry& a_lhs, const Entry& a_rhs) {
+			// Named shaders first, then the ones the name file does not cover (they
+			// keep their plugin:form id label).
+			if (a_lhs.name.empty() != a_rhs.name.empty()) {
+				return !a_lhs.name.empty();
+			}
 			const auto lhs = ToLower(a_lhs.Label());
 			const auto rhs = ToLower(a_rhs.Label());
 			if (lhs != rhs) {
@@ -284,7 +324,8 @@ namespace BlinkDash::Effects
 			BD("effects: unavailable, skipping playback ({})", a_reason);
 			return;
 		}
-		if (!s_selected || !s_selected->shader) {
+		const auto* selected = Selected();
+		if (!selected || !selected->shader) {
 			BD("effects: nothing selected, skipping playback ({})", a_reason);
 			return;
 		}
@@ -302,8 +343,8 @@ namespace BlinkDash::Effects
 		}
 
 		BD("effects: calling ApplyEffectShader(player=0x{:X}, key='{}', form=0x{:08X}, duration {:.2f}) [{}]",
-			reinterpret_cast<std::uintptr_t>(player), s_selected->Key(), s_selected->runtimeFormID, kBlinkDuration, a_reason);
-		auto* effect = fn(player, s_selected->shader, kBlinkDuration, nullptr, false, false, nullptr, false);
+			reinterpret_cast<std::uintptr_t>(player), selected->Key(), selected->runtimeFormID, kBlinkDuration, a_reason);
+		auto* effect = fn(player, selected->shader, kBlinkDuration, nullptr, false, false, nullptr, false);
 		BD("effects: ApplyEffectShader returned 0x{:X} [{}]", reinterpret_cast<std::uintptr_t>(effect), a_reason);
 	}
 }
