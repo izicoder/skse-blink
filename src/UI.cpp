@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "UI.h"
 #include "Config.h"
+#include "Debug.h"
 #include "Effects.h"
 #include "Log.h"
 #include "SKSEMenuFramework.h"
@@ -246,6 +247,111 @@ namespace BlinkDash::UI
 			Hint("Puts every setting above back to its default.");
 		}
 
+		// Top-down picture of the last blink in world XY, drawn straight into the menu
+		// window's draw list. No camera, no projection, nothing that can go wrong if the
+		// in-game view is odd - it is a plan view of where the rays went.
+		void RenderBlinkDiagram(const Debug::Snapshot& a_snapshot)
+		{
+			const float size = (std::min)(320.0f, ImGui::GetContentRegionAvail().x);
+			auto* drawList = ImGui::GetWindowDrawList();
+			if (!drawList || size < 60.0f) {
+				return;
+			}
+
+			const ImGui::ImVec2 origin = ImGui::GetCursorScreenPos();
+			const ImGui::ImVec2 boxMax{ origin.x + size, origin.y + size };
+
+			float minX = a_snapshot.feet.x;
+			float maxX = minX;
+			float minY = a_snapshot.feet.y;
+			float maxY = minY;
+			const auto include = [&](const RE::NiPoint3& a_point) {
+				minX = (std::min)(minX, a_point.x);
+				maxX = (std::max)(maxX, a_point.x);
+				minY = (std::min)(minY, a_point.y);
+				maxY = (std::max)(maxY, a_point.y);
+			};
+
+			include(a_snapshot.landing);
+			for (std::size_t i = 0; i < a_snapshot.count; ++i) {
+				include(a_snapshot.segments[i].from);
+				include(a_snapshot.segments[i].to);
+			}
+
+			// North (+y) points up, and the whole thing is scaled to fit the box.
+			const float span = (std::max)((std::max)(maxX - minX, maxY - minY), 1.0f);
+			const float pad = 10.0f;
+			const float usable = size - pad * 2.0f;
+			const auto project = [&](const RE::NiPoint3& a_point) {
+				const float px = pad + (a_point.x - minX) / span * usable;
+				const float py = size - pad - (a_point.y - minY) / span * usable;
+				return ImGui::ImVec2{ origin.x + px, origin.y + py };
+			};
+
+			ImGui::ImDrawListManager::AddRectFilled(drawList, origin, boxMax, IM_COL32(16, 16, 20, 230), 4.0f, 0);
+
+			for (std::size_t i = 0; i < a_snapshot.count; ++i) {
+				const auto& segment = a_snapshot.segments[i];
+				const auto  colour = segment.hit ? IM_COL32(230, 90, 90, 255) : IM_COL32(110, 220, 120, 255);
+				ImGui::ImDrawListManager::AddLine(drawList, project(segment.from), project(segment.to), colour, 2.0f);
+			}
+
+			const auto feet = project(a_snapshot.feet);
+			const auto landing = project(a_snapshot.landing);
+			ImGui::ImDrawListManager::AddLine(drawList, feet, landing, IM_COL32(255, 255, 255, 200), 2.0f);
+
+			const auto dot = [&](const ImGui::ImVec2 a_at, ImGui::ImU32 a_colour) {
+				ImGui::ImDrawListManager::AddRectFilled(drawList,
+					ImGui::ImVec2{ a_at.x - 3.0f, a_at.y - 3.0f },
+					ImGui::ImVec2{ a_at.x + 3.0f, a_at.y + 3.0f },
+					a_colour, 0.0f, 0);
+			};
+			dot(feet, IM_COL32(255, 220, 90, 255));
+			dot(landing, IM_COL32(90, 200, 255, 255));
+
+			ImGui::Dummy(ImGui::ImVec2{ size, size });
+		}
+
+		void RenderDebug(float a_itemWidth)
+		{
+			UNUSED(a_itemWidth);
+			auto& settings = Config::Get();
+			if (ImGui::Checkbox("Draw what the last blink probed", &settings.debugOverlay)) {
+				BD("ui: debugOverlay -> {}", settings.debugOverlay);
+				MarkChanged("debugOverlay");
+			}
+			Hint("Top down view of the last blink: red segments hit something, green ones are clear.");
+
+			if (!settings.debugOverlay) {
+				return;
+			}
+
+			Debug::Snapshot snapshot;
+			if (!Debug::Latest(snapshot)) {
+				Paragraph("No blink recorded yet - blink once and reopen this menu.");
+				return;
+			}
+
+			ImGui::TextUnformatted(snapshot.summary.c_str());
+			ImGui::Spacing();
+			RenderBlinkDiagram(snapshot);
+
+			ImGui::Spacing();
+			int shown = 0;
+			for (std::size_t i = 0; i < snapshot.count; ++i) {
+				const auto& segment = snapshot.segments[i];
+				if (!segment.hit || shown >= 6) {
+					continue;
+				}
+				++shown;
+				ImGui::TextDisabled("%s hit at (%.0f, %.0f, %.0f)  fraction %.3f",
+					segment.label, segment.to.x, segment.to.y, segment.to.z, segment.fraction);
+			}
+			if (shown == 0) {
+				ImGui::TextDisabled("every probe of that blink was clear");
+			}
+		}
+
 		void __stdcall Render()
 		{
 			const int frame = renderFrames.fetch_add(1) + 1;
@@ -258,8 +364,8 @@ namespace BlinkDash::UI
 			// One width for every control, so the labels line up down the page.
 			const float itemWidth = (std::max)(200.0f, ImGui::GetContentRegionAvail().x * 0.5f);
 
-			Paragraph("Blink dashes you a short way in the direction you are holding (WASD or the movement stick).");
-			Paragraph("Hold a direction, then tap the hotkey. Standing still does nothing.");
+			Paragraph("Blink dashes you a short way in the direction you are pushing (WASD or the movement stick).");
+			Paragraph("Hold a direction, then tap the hotkey. Standing still it blinks where you face.");
 
 			ImGui::SeparatorText("Activation");
 			RenderHotkey(settings.hotkey);
@@ -277,7 +383,7 @@ namespace BlinkDash::UI
 				BD("ui: staminaCost -> {:.0f}", settings.staminaCost);
 				MarkChanged("staminaCost");
 			}
-			Hint("Stamina drained per blink. 0 blinks for free.");
+			Hint("Stamina drained per blink, and only while you are in combat. 0 blinks for free.");
 
 			ImGui::SetNextItemWidth(itemWidth);
 			float tapWindowMs = settings.retriggerDelay * 1000.0f;
@@ -294,6 +400,9 @@ namespace BlinkDash::UI
 
 			ImGui::SeparatorText("Reset");
 			RenderReset(settings);
+
+			ImGui::SeparatorText("Debug");
+			RenderDebug(itemWidth);
 
 			ImGui::Spacing();
 			Paragraph("Every change saves itself; there is nothing to apply.");

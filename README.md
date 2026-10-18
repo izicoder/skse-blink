@@ -9,28 +9,45 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 ## Features
 
 - **Blink hotkey** (default: **Mouse 4**). Hold a direction (WASD or stick) and **tap** the hotkey: the blink
-  goes the way you are pushing.
-- **Collision detection**: two Havok rays (chest and head height) find the first wall/obstacle in the blink
-  path and stop you just short of it (clearance), so you do not clip into geometry.
-- **Ground snap**: a downward ray puts you on the floor instead of inside terrain. It is silent and banded
-  (+/-256 units), so blinking mid air keeps you mid air instead of rejecting the blink.
+  goes the way you are pushing. Hold nothing and it blinks where you face.
+- **Collision detection**: Havok rays at chest and head height find the first wall/obstacle in the blink
+  path, and a body-volume probe at the landing spot catches the corners a single line can slip past. The
+  configured distance is a **maximum**: whatever the rays find shortens the blink instead of cancelling it.
+- **Ground snap**: only while you are standing on something. A blink in mid air keeps your height, so a
+  jump is not dragged back down to the floor.
 - **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
   No ESP, no new records, no sound.
-- **Stamina cost** and a **tap window** (see retrigger delay below).
-- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, tap window and the
-  effect shader dropdown, each with a one line explanation, plus a Reset defaults button. There is no
-  Test blink and no Save/Apply: every change saves itself.
+- **Stamina cost** (charged in combat only) and a **tap window** (see retrigger delay below).
+- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, tap window, the
+  effect shader dropdown and a debug view, each with a one line explanation, plus a Reset defaults button.
+  There is no Test blink and no Save/Apply: every change saves itself.
+- **Debug view** (off by default): draws the last blink's rays and landing spot, so a "why did it clip that
+  wall" question can be answered by looking instead of by reading a log.
 - Settings persist to `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2).
 - Works without SKSE Menu Framework installed (menu is skipped, hotkey still works).
 
 ## Direction and the tap window
 
-- The direction comes from the engine's own movement input (`PlayerControls::data.moveInputVec`, which is
-  what WASD and the gamepad stick produce) expressed in the camera yaw. When you are actually moving, the
-  horizontal velocity wins, since that is what the keys are really doing. Holding nothing = no blink.
+- The direction is worked out here, not taken from the engine's player facing:
+  - **Keys first.** The movement keys are looked up in the game's own control map at blink time (so
+    rebinding and non-QWERTY layouts work) and the keys that are down are read out of the input sink.
+    `PlayerControls::data.moveInputVec` cannot do this alone: the engine leaves its strafe axis at 0 for the
+    keyboard, because the character turns towards the movement instead of strafing.
+  - **Then the stick.** With nothing bound or held, the engine vector is used, which is what a gamepad
+    fills in (and the two are never summed: for the keyboard that vector already carries the input length
+    on one axis).
+  - **Then velocity.** Nothing held but the player is moving anyway - root motion, a slide, a knockback.
+  - **Then facing.** Nothing held and not moving: blink straight ahead.
+- The input is applied in the camera's yaw, which is the frame the engine moves the character in.
 - The hotkey is **tap to blink**: press and release inside the retrigger delay (default 200 ms) fires one
   blink. Holding it longer does nothing, so it is safe to put on sprint or jump.
 - Blinks are queued from the input thread and executed on a game thread.
+
+## What the blink touches
+
+Only three things: it reads the player's velocity and collision filter, casts read-only rays into the Havok
+world, then writes the player's position, damages the stamina actor value (in combat) and plays an effect
+shader. No animation graph call, no ragdoll, no force or impulse, no velocity write. It is a dislocation.
 
 ## Effects
 
@@ -131,9 +148,10 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 |---|---|
 | Hotkey | Mouse 4 (`0x103`) |
 | Distance | 300 units |
-| Stamina cost | 10 |
+| Stamina cost | 10 (charged in combat only) |
 | Retrigger delay | 200 ms |
 | Effect shader | `Skyrim.esm:000E5C` (Nightingale invisibility) |
+| Debug view | off |
 
 `BlinkDash.json` is written with these defaults on first run and is **not** overwritten by builds, so your
 saved settings survive.
@@ -143,11 +161,21 @@ keyboard scancode. That is the same numbering SKSE's `InputMap` uses, so the men
 key name (and `Left Mouse` / `Mouse 4` / ... for the mouse half).
 
 Distance is clamped to 100..2020 units, loaded or typed: 2020 is the hard cap the blink itself applies, so
-the setting can no longer ask for travel that will never happen.
+the setting can no longer ask for travel that will never happen. It is a maximum, not a promise: the rays
+shorten the travel when something is in the way, and only give up when there is no room left at all.
 
 There is no `enabled`, `mode`, `cooldown`, `clearance`, `minDistance` or `groundSnap` option any more.
-Clearance (40), the minimum travel (30), the two obstacle ray heights (64 / 120) and the ground snap
-band (+/-256 units, silent, never rejects) are internal constants.
+Clearance (40), the minimum travel (10), the two obstacle ray heights (64 / 120), the body probe (24 units
+at 48 / 120), the step-back (25 units, 8 tries), the ground snap band (+/-256 units) and the "standing on
+ground" tolerance (32 units) are internal constants.
+
+## Debug view
+
+Tick **Draw what the last blink probed** in the menu's Debug section and it draws a top-down picture of the
+last blink: the obstacle rays (red when they hit something, green when they are clear), the direction, the
+landing spot and the ground probes, plus the numbers the blink used. It is drawn inside the menu window, so
+it works with no camera maths and nothing to go wrong in game; blink once, open the menu, and look at what
+the rays actually did.
 
 ## Known crash (fixed by removal)
 

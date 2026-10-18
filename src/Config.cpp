@@ -44,6 +44,7 @@ namespace BlinkDash
 				{ "staminaCost", a_settings.staminaCost },
 				{ "retriggerDelay", a_settings.retriggerDelay },
 				{ "effectShader", a_settings.effectShader },
+				{ "debugOverlay", a_settings.debugOverlay },
 			};
 		}
 	}
@@ -58,9 +59,9 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) effectShader='{}'",
+			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) effectShader='{}' debugOverlay={}",
 			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
-			s.effectShader.empty() ? "none" : s.effectShader);
+			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay);
 	}
 
 	std::filesystem::path Config::Path()
@@ -170,6 +171,9 @@ namespace BlinkDash
 			}
 			if (json.contains("effectShader")) {
 				s.effectShader = json.at("effectShader").get<std::string>();
+			}
+			if (json.contains("debugOverlay")) {
+				s.debugOverlay = json.at("debugOverlay").get<bool>();
 			}
 
 			Validate();

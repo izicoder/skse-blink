@@ -57,6 +57,8 @@ set(SOURCES
 	src/Config.cpp
 	src/Effects.h
 	src/Effects.cpp
+	src/Debug.h
+	src/Debug.cpp
 	src/Input.h
 	src/UI.h
 	src/UI.cpp

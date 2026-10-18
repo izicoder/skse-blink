@@ -7,6 +7,49 @@
 
 namespace BlinkDash::Input
 {
+	// Which keys and mouse buttons the game currently has down, in the same encoding
+	// the hotkey uses (keyboard scancode, or 0x100 | mouse button). The engine leaves
+	// PlayerControls::data.moveInputVec.x at 0 for the keyboard (the character turns
+	// instead of strafing), so the blink builds its own movement vector out of this
+	// plus the movement keys the game has bound right now.
+	namespace State
+	{
+		constexpr std::uint32_t kCodeCount = 0x100 + 8;  // 256 scancodes + 8 mouse buttons
+		constexpr std::uint32_t kWordCount = (kCodeCount + 63) / 64;
+
+		inline std::atomic<std::uint64_t> s_held[kWordCount]{};
+
+		inline void Set(std::uint32_t a_code, bool a_down)
+		{
+			const auto word = a_code / 64;
+			const auto bit = std::uint64_t{ 1 } << (a_code % 64);
+			if (word >= kWordCount) {
+				return;
+			}
+			if (a_down) {
+				s_held[word].fetch_or(bit, std::memory_order_relaxed);
+			} else {
+				s_held[word].fetch_and(~bit, std::memory_order_relaxed);
+			}
+		}
+
+		[[nodiscard]] inline bool IsHeld(std::uint32_t a_code)
+		{
+			const auto word = a_code / 64;
+			if (word >= kWordCount) {
+				return false;
+			}
+			return (s_held[word].load(std::memory_order_relaxed) >> (a_code % 64)) & 1;
+		}
+
+		inline void Clear()
+		{
+			for (auto& word : s_held) {
+				word.store(0, std::memory_order_relaxed);
+			}
+		}
+	}
+
 	namespace Detail
 	{
 		inline std::atomic<int>& RawLogBudget()
@@ -68,6 +111,10 @@ namespace BlinkDash::Input
 				} else if (device != RE::INPUT_DEVICE::kKeyboard) {
 					continue;
 				}
+
+				// Track every key, not just the hotkey: the blink direction is built
+				// from the movement keys that are down at the moment it fires.
+				State::Set(code, button->Value() > 0.0f);
 
 				if (button->IsDown()) {
 					++downCount;
