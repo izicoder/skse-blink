@@ -664,13 +664,13 @@ namespace BlinkDash::UI
 				}
 
 				// Any device: keyboard key, mouse button or gamepad button.
-				const auto code = Input::State::Encode(button->device.get(), button->idCode);
+				const auto code = Input::State::Encode(button->device.get(), button->GetIDCode());
 				if (code == Input::State::kUnknownCode) {
 					continue;
 				}
 
 				BDI("ui: captured new hotkey 0x{:X} (device={}, idCode={})",
-					code, static_cast<int>(button->device.get()), button->idCode);
+					code, static_cast<int>(button->device.get()), button->GetIDCode());
 				Config::Get().hotkey = code;
 				capturing.store(false);
 				SKSEMenuFramework::SetHotkeyEnabled(true);

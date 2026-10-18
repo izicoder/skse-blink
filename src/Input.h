@@ -195,7 +195,7 @@ namespace BlinkDash::Input
 					continue;
 				}
 
-				const std::uint32_t code = State::Encode(button->device.get(), button->idCode);
+				const std::uint32_t code = State::Encode(button->device.get(), button->GetIDCode());
 				if (code == State::kUnknownCode) {
 					continue;
 				}
@@ -208,7 +208,7 @@ namespace BlinkDash::Input
 					++downCount;
 					if (const int left = Detail::RawLogBudget().fetch_sub(1); left > 0) {
 						BD("input: down event code=0x{:X} ({}) device={} value={:.3f} held={:.3f}",
-							code, Detail::DescribeCode(code), static_cast<int>(button->device.get()), button->value, button->heldDownSecs);
+							code, Detail::DescribeCode(code), static_cast<int>(button->device.get()), button->Value(), button->HeldDuration());
 					}
 				}
 
