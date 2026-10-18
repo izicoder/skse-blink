@@ -483,73 +483,100 @@ namespace BlinkDash::UI
 					frame, io->DisplaySize.x, io->DisplaySize.y, snapshot.count);
 			}
 
-			// Clear of the compass, which owns the very top left of the HUD.
+			// Clear of the compass, which owns the very top left of the HUD. Two columns:
+			// the plan view on the left, the numbers and what hit on the right, the legend
+			// spread across the bottom, so nothing has to share a line with anything else.
 			const ImGui::ImVec2 panel{ 20.0f, 96.0f };
-			constexpr float kPanelWidth = 496.0f;
-			constexpr float kBoxSize = 200.0f;
-			constexpr float kRowHeight = 18.0f;
-			constexpr float kTextX = 12.0f;
-			const float     detailsX = panel.x + kTextX + kBoxSize + 16.0f;
+			constexpr float kPanelWidth = 620.0f;
+			constexpr float kPad = 14.0f;
+			constexpr float kRowHeight = 19.0f;
+			constexpr float kDiagramSize = 216.0f;
+			constexpr float kLegendRows = 3.0f;
 
-			float panelBottom = panel.y + 8.0f + kRowHeight * 4.0f + kBoxSize + 12.0f;
+			const float titleY = panel.y + 10.0f;
+			const float contentY = titleY + kRowHeight + 8.0f;
+			const float textX = panel.x + kPad;
+			const float statsX = textX + kDiagramSize + 20.0f;
+
+			// Everything the right column shows is built before anything is drawn, so the
+			// panel can be sized to fit it instead of guessed at.
+			std::vector<std::pair<ImGui::ImU32, std::string>> stats;
+			stats.emplace_back(kBodyText, std::format("travel {:.0f} of {:.0f} units{}",
+				snapshot.travel, snapshot.requested, snapshot.shortened ? "  (shortened)" : ""));
+			stats.emplace_back(kBodyText, std::format("blocked {}   body fit pulls {}", snapshot.blocked ? "yes" : "no", snapshot.pulls));
+			stats.emplace_back(kBodyText, std::format("direction ({:.2f}, {:.2f})   {}",
+				snapshot.direction.x, snapshot.direction.y,
+				snapshot.grounded ? (snapshot.slopeFollowed ? "on ground, followed the slope" : "on ground") : "airborne"));
+			stats.emplace_back(kBodyText, std::format("climbed {:+.0f} units", snapshot.climb));
+			stats.emplace_back(kBodyText, std::format("slope limit {:.0f}deg   surface {:.1f}deg",
+				Config::Get().maxSlope, snapshot.groundSlopeDegrees));
+			stats.emplace_back(kBodyText, std::format("walked over {} probe{}", snapshot.walked, snapshot.walked == 1 ? "" : "s"));
+
+			std::vector<std::pair<ImGui::ImU32, std::string>> hits;
+			for (std::size_t i = 0; i < snapshot.count && hits.size() < 6; ++i) {
+				const auto& segment = snapshot.segments[i];
+				if (!segment.hit) {
+					continue;
+				}
+				hits.emplace_back(segment.walked ? kPathSlope : kPathSolid,
+					std::format("{} hit a {:.0f}deg surface at {:.0f}%", segment.label, segment.slopeDegrees, segment.fraction * 100.0f));
+			}
+			if (hits.empty()) {
+				hits.emplace_back(IM_COL32(120, 220, 140, 235), "nothing hit, the whole path was clear");
+			}
+
+			const float statsHeight = kRowHeight * static_cast<float>(stats.size()) + 10.0f + kRowHeight * static_cast<float>(hits.size() + 1);
+			const float contentBottom = (std::max)(contentY + kDiagramSize, contentY + statsHeight) + 10.0f;
+			const float panelBottom = contentBottom + kRowHeight * kLegendRows + 10.0f;
 
 			ImGui::ImDrawListManager::AddRectFilled(drawList, panel,
 				ImGui::ImVec2{ panel.x + kPanelWidth, panelBottom }, kPanelBg, 6.0f, 0);
 			ImGui::ImDrawListManager::AddRect(drawList, panel,
 				ImGui::ImVec2{ panel.x + kPanelWidth, panelBottom }, kPanelEdge, 6.0f, 0, 1.0f);
 
-			float y = panel.y + 8.0f;
-			const auto row = [&](ImGui::ImU32 a_colour, const std::string& a_text) {
-				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ panel.x + kTextX, y }, a_colour, a_text.c_str());
-				y += kRowHeight;
-			};
+			ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ textX, titleY }, kTitleText, snapshot.headline.c_str());
+			ImGui::ImDrawListManager::AddLine(drawList,
+				ImGui::ImVec2{ textX, titleY + kRowHeight }, ImGui::ImVec2{ panel.x + kPanelWidth - kPad, titleY + kRowHeight },
+				IM_COL32(70, 72, 86, 200), 1.0f);
 
-			row(kTitleText, snapshot.headline);
-			row(kBodyText, std::format("travel {:.0f} of {:.0f}   blocked {}   body fit pulls {}{}",
-				snapshot.travel, snapshot.requested, snapshot.blocked ? "yes" : "no", snapshot.pulls,
-				snapshot.shortened ? "   shortened" : ""));
-			row(kBodyText, std::format("direction ({:.2f}, {:.2f})   {}   climbed {:+.0f}",
-				snapshot.direction.x, snapshot.direction.y,
-				snapshot.grounded ? (snapshot.slopeFollowed ? "on ground, followed the slope" : "on ground") : "airborne",
-				snapshot.climb));
-			row(kBodyText, std::format("slope limit {:.0f}deg   landing surface {:.1f}deg   walked over {} probe{}",
-				Config::Get().maxSlope, snapshot.groundSlopeDegrees, snapshot.walked, snapshot.walked == 1 ? "" : "s"));
+			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ textX, contentY }, kDiagramSize);
 
-			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ panel.x + kTextX, y + 2.0f }, kBoxSize);
-
-			// Legend and the interesting details, to the right of the diagram. Each entry
-			// gets its colour as a swatch, so the picture reads without the words.
-			float legendY = y + 2.0f;
-			const auto legend = [&](ImGui::ImU32 a_colour, const std::string& a_text) {
+			// The right column: the numbers, then what actually hit.
+			float statsY = contentY;
+			for (const auto& [colour, text] : stats) {
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ statsX, statsY }, colour, text.c_str());
+				statsY += kRowHeight;
+			}
+			statsY += 10.0f;
+			ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ statsX, statsY }, kAxisText, "WHAT HIT");
+			statsY += kRowHeight;
+			for (const auto& [colour, text] : hits) {
 				ImGui::ImDrawListManager::AddRectFilled(drawList,
-					ImGui::ImVec2{ detailsX, legendY + 3.0f }, ImGui::ImVec2{ detailsX + 9.0f, legendY + 12.0f }, a_colour, 1.0f, 0);
-				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ detailsX + 15.0f, legendY }, kDimText, a_text.c_str());
-				legendY += kRowHeight;
-			};
-			legend(kFeetMark, "you, where the blink started");
-			legend(kLandingMark, "target, where you land");
-			legend(kDirectionMark, "the direction you were pushing");
-			legend(kPathClear, "body height ray, path clear");
-			legend(kPathSolid, "body height ray, solid hit");
-			legend(kPathSlope, "hit a slope, blinked over it");
-			legend(kFitHit, "body probe that hit");
-			legend(kGroundProbe, "ground probe");
-			legend(kCeilingProbe, "ceiling probe that hit");
+					ImGui::ImVec2{ statsX, statsY + 4.0f }, ImGui::ImVec2{ statsX + 8.0f, statsY + 13.0f }, colour, 1.0f, 0);
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ statsX + 14.0f, statsY }, kBodyText, text.c_str());
+				statsY += kRowHeight;
+			}
 
-			legendY += 6.0f;
-			int shown = 0;
-			for (std::size_t i = 0; i < snapshot.count && shown < 6; ++i) {
-				const auto& segment = snapshot.segments[i];
-				if (!segment.hit) {
-					continue;
-				}
-				++shown;
-				const ImGui::ImU32 colour = segment.walked ? kPathSlope : IM_COL32(235, 150, 150, 235);
-				legend(colour, std::format("{} hit a {:.0f}deg surface at {:.0f}%", segment.label, segment.slopeDegrees, segment.fraction * 100.0f));
-			}
-			if (shown == 0) {
-				legend(IM_COL32(120, 220, 140, 235), "nothing hit, the whole path was clear");
-			}
+			// Legend across the bottom, three entries per line. Each entry gets its colour
+			// as a swatch, so the picture reads without the words.
+			constexpr int kLegendCols = 3;
+			const float   legendColWidth = (kPanelWidth - kPad * 2.0f) / static_cast<float>(kLegendCols);
+			const auto    legend = [&](int a_column, int a_row, ImGui::ImU32 a_colour, const char* a_text) {
+				const float lx = textX + legendColWidth * static_cast<float>(a_column);
+				const float ly = contentBottom + kRowHeight * static_cast<float>(a_row);
+				ImGui::ImDrawListManager::AddRectFilled(drawList,
+					ImGui::ImVec2{ lx, ly + 4.0f }, ImGui::ImVec2{ lx + 9.0f, ly + 13.0f }, a_colour, 1.0f, 0);
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ lx + 15.0f, ly }, kDimText, a_text);
+			};
+			legend(0, 0, kFeetMark, "you");
+			legend(0, 1, kLandingMark, "where you land");
+			legend(0, 2, kDirectionMark, "push direction");
+			legend(1, 0, kPathClear, "ray, clear");
+			legend(1, 1, kPathSolid, "ray, solid hit");
+			legend(1, 2, kPathSlope, "hit a slope");
+			legend(2, 0, kFitHit, "body probe hit");
+			legend(2, 1, kGroundProbe, "ground probe");
+			legend(2, 2, kCeilingProbe, "ceiling hit");
 		}
 
 		void RenderDebug(float a_itemWidth)

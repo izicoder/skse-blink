@@ -32,6 +32,9 @@ namespace BlinkDash
 		constexpr float kMaxSnapDown = 256.0f;     // further down than this = the drop is ignored
 		constexpr float kMaxSnapUp = 256.0f;       // floor under the climb band: a level landing may still be this far above the feet
 		constexpr float kMaxClimbFollow = 1024.0f;  // furthest up a followed slope is allowed to climb over one blink
+		// SkyParkour's landing roll waits for half a second of fall before it fires; the
+		// fall timer is only pulled back to just past that, never zeroed, so it still does.
+		constexpr float kRollFallTimeGate = 0.6f;
 		constexpr float kGroundedTolerance = 32.0f;  // ground this close under the feet means "standing"
 		constexpr std::uintptr_t kMinPlausibleVtable = 0x10000;
 		constexpr float kRadiansPerDegree = 3.14159265f / 180.0f;
@@ -451,6 +454,41 @@ namespace BlinkDash
 			return probe;
 		}
 
+		// Vanilla threshold under which a landing is free (fJumpFallHeightMin, 600).
+		// Read from the game settings rather than hardcoded, because mods move it.
+		float FallDamageHeight()
+		{
+			if (auto* collection = RE::GameSettingCollection::GetSingleton()) {
+				if (auto* setting = collection->GetSetting("fJumpFallHeightMin")) {
+					return setting->GetFloat();
+				}
+			}
+			return 600.0f;
+		}
+
+		// The engine charges fall damage at the next landing from the height it recorded
+		// when the fall began. SkyParkour's landing roll deliberately starts while the
+		// player is still in the air and puts the character on the ground itself, so a
+		// blink in the middle of that fall is a discontinuity the engine knows nothing
+		// about and the roll's landing gets charged for a fall the player already left -
+		// which kills. Re-basing the tracker on the blink point drops that charge.
+		void RebaseFallTracker(RE::bhkCharacterController* a_controller, const RE::NiPoint3& a_landing, float a_damageHeight, std::uint64_t a_seq)
+		{
+			const float pendingHeight = a_controller->fallStartHeight - a_landing.z;
+			const float pendingTime = a_controller->fallTime;
+
+			a_controller->fallStartHeight = a_landing.z;
+			a_controller->fallTime = (std::min)(pendingTime, kRollFallTimeGate);
+
+			BD("blink[{}] fall tracker: {:.1f} units above the feet, falling {:.2f}s -> re-based on the landing, fallTime now {:.2f}s",
+				a_seq, pendingHeight, pendingTime, a_controller->fallTime);
+
+			if (pendingHeight > a_damageHeight) {
+				BDW("blink[{}] the blink caught a fall that was already {:.1f} units deep (damage from {:.0f}): that charge is dropped instead of landing on the next one",
+					a_seq, pendingHeight, a_damageHeight);
+			}
+		}
+
 		bool CanBlinkNow(RE::PlayerCharacter* a_player, const char* a_source)
 		{
 			BD("blink gate checks (source={}):", a_source);
@@ -617,6 +655,7 @@ namespace BlinkDash
 			const auto rayFilter = BuildRayFilter(rawFilter);
 			const float maxSlope = std::clamp(settings.maxSlope, 20.0f, 80.0f);
 			const float slopeTan = std::tan(maxSlope * kRadiansPerDegree);
+			const float fallDamageHeight = FallDamageHeight();
 
 			// --- obstacle rays ------------------------------------------------------
 			// The distance is a maximum: whatever the rays find shortens the travel, it
@@ -765,6 +804,12 @@ namespace BlinkDash
 				controller->GetLinearVelocityImpl(check);
 				BD("blink[{}] momentum: restored {:.3f} (now reads {:.3f})",
 					a_seq, std::sqrt(velocityBefore.Dot3(velocityBefore)), std::sqrt(check.Dot3(check)));
+			}
+
+			// A blink is a discontinuity in the middle of a fall, so the engine's fall
+			// tracker is re-based on the landing: see RebaseFallTracker.
+			if (controller) {
+				RebaseFallTracker(controller, landing, fallDamageHeight, a_seq);
 			}
 
 			const RE::NiPoint3 after = player->GetPosition();

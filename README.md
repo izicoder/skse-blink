@@ -24,6 +24,10 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 - **Ground snap**: only while you are standing on something. A blink in mid air keeps your height, so a
   jump is not dragged back down to the floor. On the ground the landing is placed on the surface under it,
   following a slope when there is one.
+- **SkyParkour compatible**: its crouch slide and landing roll both keep working. The roll starts while you
+  are still in the air and puts the character on the ground itself, so the blink re-bases the engine's fall
+  tracker on the landing point - otherwise that landing gets charged for the fall the blink interrupted,
+  which is instant death (see below).
 - **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
   No ESP, no new records, no sound.
 - **Stamina cost** (charged in combat only), a **tap window** and an optional **cooldown** (default 0,
@@ -205,6 +209,33 @@ Logged with the reason every time:
 | no clear landing spot for the body | the rays were clear but the body would not fit at the landing |
 | no blink direction | the input produced a degenerate direction |
 
+## SkyParkour
+
+SkyParkour's crouch slide and landing roll are behaviour-driven: the plugin only triggers the animation and
+gates input, the character is moved by the animation's root motion. Its roll deliberately fires **while the
+player is still in the air** (mid-air, half a second of fall, ground within 100 units) and lands the
+character itself.
+
+The engine charges fall damage at the next landing from the height it recorded when the fall began
+(`bhkCharacterController::fallStartHeight`, threshold `fJumpFallHeightMin`, vanilla 600). A blink is a
+discontinuity in the middle of a fall that the engine knows nothing about, so a roll after a blink used to be
+charged for the whole fall - instant death, even on flat ground, because the height it charges is measured
+from before the teleport.
+
+Every blink therefore re-bases the tracker on the landing point:
+
+- `fallStartHeight` is set to the landing height, so nothing the player did not fall through is charged,
+- `fallTime` is pulled back to 0.6 s rather than zeroed, which is just past the 0.5 s of fall SkyParkour's
+  roll waits for, so the roll still fires after a blink.
+
+Both values, and the height that was pending, are logged on every blink, so a blink that catches a dangerous
+fall says so:
+
+```
+blink[121] fall tracker: 1136.4 units above the feet, falling 2.18s -> re-based on the landing, fallTime now 0.60s
+blink[121] the blink caught a fall that was already 1136.4 units deep (damage from 600): that charge is dropped instead of landing on the next one
+```
+
 ## Debug view
 
 Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn **in game,
@@ -212,10 +243,12 @@ in the top left of the screen**, where it can be read while playing: blink, look
 drawn in the menu itself, and the overlay removes itself while the game is paused or a menu is open, so it
 never covers the cursor. It is a labelled panel:
 
-- a title line and three rows of numbers: travel taken vs requested, blocked or not, how many times the body
-  fit had to step the landing back, the direction, whether the ground was snapped or the height kept, the
-  slope limit, the angle of the surface under the landing and how far the blink climbed,
-- a **plan view** (north marked with an arrow, on a grid, with a scale bar): the body height rays in green
+- a title line and a left/right split: the **plan view** on the left, the numbers and what actually hit on
+  the right, and the colour legend spread across the bottom - nothing shares a line with anything else,
+- the numbers: travel taken vs requested, blocked or not, how many times the body fit had to step the landing
+  back, the direction, whether the ground was snapped or the height kept, the climb, the slope limit, the
+  angle of the surface under the landing and how many probes the blink walked over,
+- the plan view (north marked with an arrow, on a grid, with a scale bar): the body height rays in green
   when clear, red when they hit something solid and amber when they hit a slope the blink walked over,
   orange for a body probe that hit, blue ticks for the vertical ground probes, purple for a ceiling that
   blocked the landing, a teal arrow for the direction you were pushing, a yellow square for where you were
