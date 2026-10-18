@@ -1,0 +1,10 @@
+{
+  "name": "blinkdash",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "spdlog",
+    "directxtk",
+    "rapidcsv",
+    "nlohmann-json"
+  ]
+}
