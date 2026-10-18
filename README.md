@@ -14,11 +14,12 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
   path and stop you just short of it (clearance), so you do not clip into geometry.
 - **Ground snap**: a downward ray puts you on the floor instead of inside terrain. It is silent and banded
   (+/-256 units), so blinking mid air keeps you mid air instead of rejecting the blink.
-- **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown and
-  previewable in the menu. No ESP, no new records, no sound.
+- **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
+  No ESP, no new records, no sound.
 - **Stamina cost** and a **tap window** (see retrigger delay below).
-- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, retrigger delay,
-  effect shader dropdown, Preview, Save, Test blink, Reset defaults.
+- **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, tap window and the
+  effect shader dropdown, each with a one line explanation, plus a Reset defaults button. There is no
+  Test blink and no Save/Apply: every change saves itself.
 - Settings persist to `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2).
 - Works without SKSE Menu Framework installed (menu is skipped, hotkey still works).
 
@@ -138,7 +139,11 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 saved settings survive.
 
 Hotkey encoding: `0x100 | n` = mouse button n (0=LMB, 1=RMB, 2=MMB, 3=MB4...), otherwise a DirectInput
-keyboard scancode.
+keyboard scancode. That is the same numbering SKSE's `InputMap` uses, so the menu shows the engine's own
+key name (and `Left Mouse` / `Mouse 4` / ... for the mouse half).
+
+Distance is clamped to 100..2020 units, loaded or typed: 2020 is the hard cap the blink itself applies, so
+the setting can no longer ask for travel that will never happen.
 
 There is no `enabled`, `mode`, `cooldown`, `clearance`, `minDistance` or `groundSnap` option any more.
 Clearance (40), the minimum travel (30), the two obstacle ray heights (64 / 120) and the ground snap
@@ -162,3 +167,27 @@ Unhandled exception "EXCEPTION_ACCESS_VIOLATION" at 0x000000000000
 `IsInBleedout()` is therefore **no longer called** (see the comment in `src/Blink.cpp`); the rest of
 the gate checks (enabled, player, 3D, dead, console, paused, blocking window) are still in place and
 each one is logged individually.
+
+## Crash triage
+
+A crash that lands with a `BlinkDash.dll+...` frame in the call stack is this plugin's; a crash that only
+shows engine frames is not. Two example verdicts, from the same session log:
+
+- **Older, this plugin's fault.** `BlinkDash.dll+001D821` (the bleedout stub, above) and
+  `BlinkDash.dll+001D50E` both topped the stack *and* all had `skse64_...dll+00199AF` right below, i.e. the
+  crash was inside the plugin's own blink task. Both are fixed in the current source.
+- **Newer, not this plugin.** The `BlinkDash.log` ends on a successful blink, and ~1 s later CrashLogger
+  reports:
+
+  ```
+  Unhandled exception "EXCEPTION_ACCESS_VIOLATION" at 0x7FF70509AA54 SkyrimSE.exe+0B6AA54  mov rax, [rdx]   (rdx = 0)
+  	[ 0][P] SkyrimSE.exe+0B6AA54   FUN_140b6aa50_B6AA54
+  	[ 1][P] SkyrimSE.exe+0B47887   hkpConstraintInstance::sub_140A85CA0_B47887
+  	[ 2][P] SkyrimSE.exe+0AAD7BF   hkbRagdollDriver::sub_1409EB010_AAD7BF
+  	[ 3][P] Precision.dll+005890F  Hooks::HavokHooks::hkbRagdollDriver_DriveToPose
+  ```
+
+  That is a **Havok ragdoll step** on a world NPC (constraint `NPC COM` -> `NPC L Thigh` on "Nils" in an
+  exterior cell), reached through Precision's own `hkbRagdollDriver::DriveToPose` hook, on the engine's
+  physics job thread. No `BlinkDash.dll` frame appears anywhere in it.
+

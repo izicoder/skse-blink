@@ -6,7 +6,11 @@ namespace BlinkDash
 {
 	namespace
 	{
-		constexpr float kMaxDistance = 3000.0f;
+		// Distance bounds are the menu slider bounds, which are also Blink.cpp's
+		// kMaxDistanceCap: anything outside is silently capped at blink time, so it is
+		// reported and clamped here instead.
+		constexpr float kMinDistance = 100.0f;
+		constexpr float kMaxDistance = 2020.0f;
 		constexpr float kMaxStaminaCost = 1000.0f;
 		constexpr float kMinRetrigger = 0.02f;   // below this a human cannot tap it anyway
 		constexpr float kMaxRetrigger = 2.0f;
@@ -80,9 +84,9 @@ namespace BlinkDash
 			s = Settings{};
 			changed = true;
 		}
-		if (s.distance < 0.0f || s.distance > kMaxDistance) {
-			BDW("config: distance {:.1f} out of range, clamping to [0, {:.1f}]", s.distance, kMaxDistance);
-			s.distance = std::clamp(s.distance, 0.0f, kMaxDistance);
+		if (s.distance < kMinDistance || s.distance > kMaxDistance) {
+			BDW("config: distance {:.1f} out of range, clamping to [{:.1f}, {:.1f}]", s.distance, kMinDistance, kMaxDistance);
+			s.distance = std::clamp(s.distance, kMinDistance, kMaxDistance);
 			changed = true;
 		}
 		if (s.staminaCost < 0.0f || s.staminaCost > kMaxStaminaCost) {
