@@ -127,3 +127,7 @@ paused, so it never covers the cursor.
 
 Logged with the reason every time: nothing held and not moving · not enough stamina · inside the cooldown ·
 inside the deadzone (something solid within 50 units) · no clear landing spot for the body.
+
+## License
+
+[MIT](LICENSE).
