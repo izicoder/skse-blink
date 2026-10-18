@@ -82,6 +82,9 @@ cmake --preset vs2022
 cmake --build build/vs2022
 ```
 
+CommonLibSSE-NG is **not compiled**: the build links the prebuilt package its release publishes (a one-time
+~128 MB download, cached under the build tree), so a build compiles this plugin's own sources only.
+
 Build from a **VS developer shell** (`vcvars64.bat`), otherwise the compiler will not find the Windows SDK.
 
 By default the DLL is not copied anywhere. Set `MOD_OUTPUT_FOLDER` to a mod folder to auto-deploy on build,

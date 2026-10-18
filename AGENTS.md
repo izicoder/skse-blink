@@ -43,9 +43,15 @@ cmake --preset vs2022                # only when CMake config changed
 cmake --build build/vs2022
 ```
 
-CMake auto-clones `extern/CommonLibSSE` (alandtse/CommonLibSSE-NG, `ng` branch) on first configure. Do **not**
-remove `directxtk`/`rapidcsv` from `vcpkg.json`: CommonLibSSE's own `find_package` needs them even though this
-plugin does not use them directly.
+CommonLibSSE-NG is **not** compiled here. `extern/CommonLibSSE` is a source checkout pinned to the library's
+release tag (`COMMONLIBSSE_TAG` in `CMakeLists.txt`) and consumed with `add_subdirectory`; the library's own
+`cmake/Prebuilt.cmake` then links the prebuilt static library that tag publishes instead of building ~530
+translation units (`COMMONLIB_PREBUILT` in the preset, cached as `<build>/CommonLibSSE/.prebuilt/<tag>`, and
+`COMMONLIB_PREBUILT_DIR=<extracted bundle>` to skip the download). The bundle is baked for **all three
+runtimes, Release, `/MD` and a specific MSVC toolset major.minor**, so do not switch VR off, build Debug,
+change the triplet to `x64-windows-static`, or point the checkout at a branch instead of the tag - any of
+those silently falls back to the 16-minute source build. Do **not** remove `directxtk`/`rapidcsv` from
+`vcpkg.json` either: the library's own `find_package` needs them even though this plugin does not use them.
 
 Auto-deploy to a mod folder is opt-in via a git-ignored `CMakeUserPresets.json` that sets
 `MOD_OUTPUT_FOLDER` (see README). A build must be configured with that variable for the post-build copy to
@@ -85,9 +91,13 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
   crashed the game. Do not reintroduce it; the other gate checks are in `Blink.cpp`.
 - The blink re-bases `bhkCharacterController` fall state on landing (SkyParkour's mid-air roll would otherwise
   charge the interrupted fall as instant death). Be careful when touching position/velocity writes.
+- The CRT linkage follows the vcpkg triplet (`x64-windows-static-md` = dynamic CRT), because that is what the
+  prebuilt CommonLibSSE bundle is baked with (`/MD`, Release). The DLL therefore needs the VC++ 2015-2022 x64
+  redistributable; `SkyrimSE.exe` itself imports `MSVCP140.dll`/`VCRUNTIME140.dll`, so any machine that runs
+  the game has it.
 - Settings live in `BlinkDash.json` **next to the DLL** and are intentionally never overwritten by the build.
 - Target runtime is **1.6.1170** (SKSE 2.2.8) and it is the **only** version the plugin has been tested on.
-  It is built with multi-runtime support (`ENABLE_SKYRIM_SE` + `ENABLE_SKYRIM_AE`), but no other runtime has
+  The linked library is the all-runtimes (SE + AE + VR) build, so other runtimes may well work, but none has
   actually been run.
 
 ## Git

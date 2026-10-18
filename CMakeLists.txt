@@ -2,10 +2,6 @@ cmake_minimum_required(VERSION 3.21)
 
 project(BlinkDash VERSION 1.0.0 LANGUAGES CXX)
 
-option(ENABLE_SKYRIM_SE "Build against the Skyrim SE runtime" ON)
-option(ENABLE_SKYRIM_AE "Build against the Skyrim AE runtime" ON)
-option(ENABLE_SKYRIM_VR "Build against the Skyrim VR runtime" OFF)
-
 # ---------------------------------------------------------------------------
 # Version header
 # ---------------------------------------------------------------------------
@@ -16,14 +12,32 @@ configure_file(
 )
 
 # ---------------------------------------------------------------------------
-# CommonLibSSE-NG (alandtse fork, ng branch) - single binary SE+AE+VR
+# CommonLibSSE-NG (alandtse fork) - single binary SE+AE+VR, NOT compiled here.
+#
+# The library is consumed the way the project documents it: a source checkout pinned to a
+# clean release tag plus add_subdirectory, where the library's own cmake/Prebuilt.cmake
+# replaces "compile ~530 translation units" with the prebuilt static library that release
+# publishes (SHA256-verified, cached under the build tree as .prebuilt/<tag>).
+# COMMONLIB_PREBUILT is set in the preset; CI gets it for free because the resolver also
+# triggers on GITHUB_ACTIONS. COMMONLIB_PREBUILT_DIR=<extracted bundle> overrides the
+# download entirely (offline machines).
+#
+# Three conditions come baked into that bundle and must not be broken:
+#  * every runtime stays on (SE + AE + VR). The runtime set changes public header layout, so
+#    VR off is not "smaller", it is ABI-incompatible - the resolver refuses and rebuilds from
+#    source. This is why the options are not overridden here any more (defaults are all on).
+#  * Release + the dynamic CRT (/MD, i.e. the x64-windows-static-md triplet): the bundle is /MD.
+#  * an MSVC toolset sharing major.minor with the one that produced the bundle.
+# Every mismatch falls back to a source build automatically - it just costs the ~16 minutes
+# this exists to avoid.
 # ---------------------------------------------------------------------------
+set(COMMONLIBSSE_TAG v13.0.0)
 set(COMMONLIBSSE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibSSE")
 if(NOT EXISTS "${COMMONLIBSSE_DIR}/CMakeLists.txt")
 	find_package(Git REQUIRED)
-	message(STATUS "extern/CommonLibSSE not found - cloning alandtse/CommonLibSSE-NG (ng branch)...")
+	message(STATUS "extern/CommonLibSSE not found - cloning alandtse/CommonLibSSE-NG at ${COMMONLIBSSE_TAG}...")
 	execute_process(
-		COMMAND "${GIT_EXECUTABLE}" clone --branch ng --depth 1 --recurse-submodules --shallow-submodules https://github.com/alandtse/CommonLibSSE-NG "${COMMONLIBSSE_DIR}"
+		COMMAND "${GIT_EXECUTABLE}" clone --branch ${COMMONLIBSSE_TAG} --depth 1 --recurse-submodules --shallow-submodules https://github.com/alandtse/CommonLibSSE-NG "${COMMONLIBSSE_DIR}"
 		RESULT_VARIABLE _clsse_clone_result
 	)
 	if(NOT _clsse_clone_result EQUAL 0)
@@ -34,7 +48,7 @@ endif()
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${COMMONLIBSSE_DIR}" CommonLibSSE)
 
-# The helper is only auto-included in CommonLibSSE's prebuilt branch; include it for source builds too.
+# The prebuilt branch includes this helper itself; a source build does not, so include it.
 include("${COMMONLIBSSE_DIR}/cmake/CommonLibSSE.cmake")
 
 # ---------------------------------------------------------------------------
