@@ -409,8 +409,11 @@ namespace BlinkDash
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
 
 			if (staminaOwner) {
-				BD("blink[{}] stamina: calling ModActorValue(kDamage, kStamina, {:.1f})", a_seq, settings.staminaCost);
-				staminaOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, settings.staminaCost);
+				// The damage modifier is a signed offset on the current value, so the
+				// cost has to be passed negative to make it a drain.
+				const float drain = -settings.staminaCost;
+				BD("blink[{}] stamina: calling ModActorValue(kDamage, kStamina, {:.1f})", a_seq, drain);
+				staminaOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, drain);
 				BD("blink[{}] stamina: after={:.1f}", a_seq, staminaOwner->GetActorValue(RE::ActorValue::kStamina));
 			}
 

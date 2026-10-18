@@ -72,16 +72,16 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 | Setting | Default |
 |---|---|
 | Hotkey | Mouse 4 (`0x103`) |
-| Mode | Facing / movement |
-| Distance | 800 units (~11 m) |
-| Cooldown | 0.5 s |
-| Clearance | 40 units |
-| Min distance | 150 units |
-| Ground snap | on |
-| Stamina cost | 0 |
+| Distance | 300 units |
+| Stamina cost | 10 |
+| Retrigger delay | 200 ms |
 
 Hotkey encoding: `0x100 | n` = mouse button n (0=LMB, 1=RMB, 2=MMB, 3=MB4...), otherwise a DirectInput
 keyboard scancode.
+
+There is no `enabled`, `mode`, `cooldown`, `clearance`, `minDistance` or `groundSnap` option any more.
+Clearance (40), the minimum travel (30), the two obstacle ray heights (64 / 120) and the ground snap
+band (+/-256 units, silent, never rejects) are internal constants.
 
 ## Known crash (fixed by removal)
 
