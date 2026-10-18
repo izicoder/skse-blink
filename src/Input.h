@@ -7,15 +7,64 @@
 
 namespace BlinkDash::Input
 {
-	// Which keys and mouse buttons the game currently has down, in the same encoding
-	// the hotkey uses (keyboard scancode, or 0x100 | mouse button). The engine leaves
-	// PlayerControls::data.moveInputVec.x at 0 for the keyboard (the character turns
-	// instead of strafing), so the blink builds its own movement vector out of this
-	// plus the movement keys the game has bound right now.
+	// Raw device state for the current frame, in the encoding the hotkey uses:
+	//   0x0000..0x00FF  keyboard scancode
+	//   0x0100..0x01FF  mouse button (0x100 | button)
+	//   0x1000..0x100F  gamepad button (index into the gamepad button table)
+	//   0x2000 | raw    gamepad button the table does not know
 	namespace State
 	{
-		constexpr std::uint32_t kCodeCount = 0x100 + 8;  // 256 scancodes + 8 mouse buttons
+		constexpr std::uint32_t kMouseFlag = 0x0100;
+		constexpr std::uint32_t kGamepadFlag = 0x1000;
+		constexpr std::uint32_t kGamepadRawFlag = 0x2000;
+		constexpr std::uint32_t kUnknownCode = 0xFFFFFFFF;
+
+		constexpr std::uint32_t kCodeCount = kGamepadFlag + 16;
 		constexpr std::uint32_t kWordCount = (kCodeCount + 63) / 64;
+
+		// ButtonEvent::idCode for a gamepad button is the XInput mask (0x0001..0x8000),
+		// with the two triggers and the sticks on their own small ids. Index them so the
+		// encoding is compact and matches SKSE::InputMap's gamepad order.
+		constexpr std::uint32_t kGamepadButtonIds[] = {
+			0x0001, 0x0002, 0x0004, 0x0008,  // dpad up / down / left / right
+			0x0010, 0x0020,                  // start / back
+			0x0040, 0x0080,                  // left / right thumb click
+			0x0100, 0x0200,                  // left / right shoulder
+			0x1000, 0x2000, 0x4000, 0x8000,  // A / B / X / Y
+			0x0009, 0x000A                   // left / right trigger
+		};
+
+		// -1 when the id is not a gamepad button we know.
+		inline int GamepadButtonIndex(std::uint32_t a_id)
+		{
+			for (std::size_t i = 0; i < std::size(kGamepadButtonIds); ++i) {
+				if (kGamepadButtonIds[i] == a_id) {
+					return static_cast<int>(i);
+				}
+			}
+			return -1;
+		}
+
+		// Turns a raw device id into the code above. kUnknownCode when it is not one.
+		inline std::uint32_t Encode(RE::INPUT_DEVICE a_device, std::uint32_t a_id)
+		{
+			if (a_id == RE::ControlMap::kInvalid) {
+				return kUnknownCode;
+			}
+			switch (a_device) {
+			case RE::INPUT_DEVICE::kKeyboard:
+				return a_id & 0xFF;
+			case RE::INPUT_DEVICE::kMouse:
+				return kMouseFlag | (a_id & 0xFF);
+			case RE::INPUT_DEVICE::kGamepad:
+				{
+					const int index = GamepadButtonIndex(a_id);
+					return index >= 0 ? kGamepadFlag + static_cast<std::uint32_t>(index) : kGamepadRawFlag | a_id;
+				}
+			default:
+				return kUnknownCode;
+			}
+		}
 
 		inline std::atomic<std::uint64_t> s_held[kWordCount]{};
 
@@ -35,6 +84,9 @@ namespace BlinkDash::Input
 
 		[[nodiscard]] inline bool IsHeld(std::uint32_t a_code)
 		{
+			if (a_code == kUnknownCode) {
+				return false;
+			}
 			const auto word = a_code / 64;
 			if (word >= kWordCount) {
 				return false;
@@ -42,11 +94,31 @@ namespace BlinkDash::Input
 			return (s_held[word].load(std::memory_order_relaxed) >> (a_code % 64)) & 1;
 		}
 
+		// The left stick, straight off the thumbstick events, which is the same kind of
+		// raw state as the keys above and wants no translation through the engine.
+		inline std::atomic<float> s_stickX{ 0.0f };
+		inline std::atomic<float> s_stickY{ 0.0f };
+		inline std::atomic<bool>  s_stickSeen{ false };
+
+		inline void SetStick(float a_x, float a_y)
+		{
+			s_stickX.store(a_x, std::memory_order_relaxed);
+			s_stickY.store(a_y, std::memory_order_relaxed);
+			s_stickSeen.store(true, std::memory_order_relaxed);
+		}
+
+		inline bool StickSeen()
+		{
+			return s_stickSeen.load(std::memory_order_relaxed);
+		}
+
 		inline void Clear()
 		{
 			for (auto& word : s_held) {
 				word.store(0, std::memory_order_relaxed);
 			}
+			s_stickX.store(0.0f, std::memory_order_relaxed);
+			s_stickY.store(0.0f, std::memory_order_relaxed);
 		}
 	}
 
@@ -60,7 +132,14 @@ namespace BlinkDash::Input
 
 		inline std::string DescribeCode(std::uint32_t a_code)
 		{
-			if ((a_code & 0x100) != 0) {
+			if ((a_code & State::kGamepadRawFlag) != 0) {
+				return std::format("gamepad button 0x{:X}", a_code & 0xFFF);
+			}
+			if ((a_code & State::kGamepadFlag) != 0) {
+				return SKSE::InputMap::GetGamepadButtonName(
+					SKSE::InputMap::kGamepadButtonOffset_DPAD_UP + (a_code & 0x0F));
+			}
+			if ((a_code & State::kMouseFlag) != 0) {
 				return std::format("mouse button {}", a_code & 0xFF);
 			}
 			return std::format("key scancode 0x{:02X}", a_code & 0xFF);
@@ -99,28 +178,37 @@ namespace BlinkDash::Input
 			for (auto* event = *a_event; event; event = event->next) {
 				++eventCount;
 
+				// The left stick is raw device state, the same as the keys: read it here
+				// and nowhere else.
+				if (auto* stick = event->AsThumbstickEvent()) {
+					if (stick->idCode == RE::ThumbstickEvent::InputTypes::kLeftThumbstick) {
+						State::SetStick(stick->xValue, stick->yValue);
+						if (const int left = Detail::RawLogBudget().fetch_sub(1); left > 0) {
+							BD("input: left stick x={:.3f} y={:.3f}", stick->xValue, stick->yValue);
+						}
+					}
+					continue;
+				}
+
 				auto* button = event->AsButtonEvent();
 				if (!button) {
 					continue;
 				}
 
-				const auto device = button->device.get();
-				std::uint32_t code = button->idCode;
-				if (device == RE::INPUT_DEVICE::kMouse) {
-					code |= 0x100;
-				} else if (device != RE::INPUT_DEVICE::kKeyboard) {
+				const std::uint32_t code = State::Encode(button->device.get(), button->idCode);
+				if (code == State::kUnknownCode) {
 					continue;
 				}
 
-				// Track every key, not just the hotkey: the blink direction is built
-				// from the movement keys that are down at the moment it fires.
+				// Track every button, not just the hotkey: the blink direction is built
+				// from the movement inputs that are down at the moment it fires.
 				State::Set(code, button->Value() > 0.0f);
 
 				if (button->IsDown()) {
 					++downCount;
 					if (const int left = Detail::RawLogBudget().fetch_sub(1); left > 0) {
 						BD("input: down event code=0x{:X} ({}) device={} value={:.3f} held={:.3f}",
-							code, Detail::DescribeCode(code), static_cast<int>(device), button->value, button->heldDownSecs);
+							code, Detail::DescribeCode(code), static_cast<int>(button->device.get()), button->value, button->heldDownSecs);
 					}
 				}
 

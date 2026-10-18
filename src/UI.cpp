@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Debug.h"
 #include "Effects.h"
+#include "Input.h"
 #include "Log.h"
 #include "SKSEMenuFramework.h"
 
@@ -96,8 +97,16 @@ namespace BlinkDash::UI
 		// the keyboard half and only the mouse half needs a table here.
 		std::string HotkeyLabel(std::uint32_t a_code)
 		{
+			if ((a_code & Input::State::kGamepadRawFlag) != 0) {
+				return std::format("Gamepad button 0x{:X}", a_code & 0xFFF);
+			}
+			if ((a_code & Input::State::kGamepadFlag) != 0) {
+				return SKSE::InputMap::GetGamepadButtonName(
+					SKSE::InputMap::kGamepadButtonOffset_DPAD_UP + (a_code & 0x0F));
+			}
+
 			const std::uint32_t raw = a_code & 0xFF;
-			if ((a_code & 0x100) != 0) {
+			if ((a_code & Input::State::kMouseFlag) != 0) {
 				switch (raw) {
 				case 0: return "Left Mouse";
 				case 1: return "Right Mouse";
@@ -423,10 +432,9 @@ namespace BlinkDash::UI
 					continue;
 				}
 
-				std::uint32_t code = button->idCode;
-				if (button->device.get() == RE::INPUT_DEVICE::kMouse) {
-					code |= 0x100;
-				} else if (button->device.get() != RE::INPUT_DEVICE::kKeyboard) {
+				// Any device: keyboard key, mouse button or gamepad button.
+				const auto code = Input::State::Encode(button->device.get(), button->idCode);
+				if (code == Input::State::kUnknownCode) {
 					continue;
 				}
 

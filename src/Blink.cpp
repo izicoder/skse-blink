@@ -23,6 +23,7 @@ namespace BlinkDash
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 10.0f;        // shorter than this is not worth a blink
 		constexpr float kInputDeadzone = 0.15f;    // input below this counts as "not holding a direction"
+		constexpr float kStickPriority = 0.5f;     // a stick pushed past this beats the movement keys
 		constexpr float kVelocityThreshold = 25.0f;  // units/second below this counts as standing still
 		constexpr float kGroundProbeUp = 120.0f;
 		constexpr float kGroundProbeDown = 600.0f;
@@ -86,83 +87,101 @@ namespace BlinkDash
 			float       x{ 0.0f };   // strafe, + right
 			float       y{ 0.0f };   // forward, + forward
 			bool        ok{ false };
+			bool        fromStick{ false };
 			const char* source{ "nothing held" };
 		};
 
-		// Our own read of the movement keys. The engine's PlayerControls::data.moveInputVec
-		// gives the stick, but for the keyboard it leaves the strafe axis at 0 (the
-		// character turns towards the movement instead of strafing), so the keys are read
-		// directly here - and through ControlMap, so rebinding and non-QWERTY layouts work.
-		InputAxis ReadKeyAxis()
+		// The movement inputs the game has bound right now, read against the button state
+		// the input sink collected: the keyboard, and anyone who put movement on gamepad
+		// buttons. Go through ControlMap so rebinding and non-QWERTY layouts work.
+		InputAxis ReadBoundMovementAxis()
 		{
 			InputAxis axis;
 
 			auto* controlMap = RE::ControlMap::GetSingleton();
 			auto* userEvents = RE::UserEvents::GetSingleton();
 			if (!controlMap || !userEvents) {
-				BD("  input: no control map/user events, keyboard axis unavailable");
+				BD("  input: no control map/user events, bound movement is unavailable");
 				return axis;
 			}
 
-			const auto forward = controlMap->GetMappedKey(userEvents->forward, RE::INPUT_DEVICE::kKeyboard);
-			const auto back = controlMap->GetMappedKey(userEvents->back, RE::INPUT_DEVICE::kKeyboard);
-			const auto left = controlMap->GetMappedKey(userEvents->strafeLeft, RE::INPUT_DEVICE::kKeyboard);
-			const auto right = controlMap->GetMappedKey(userEvents->strafeRight, RE::INPUT_DEVICE::kKeyboard);
+			const RE::INPUT_DEVICE devices[] = { RE::INPUT_DEVICE::kKeyboard, RE::INPUT_DEVICE::kGamepad };
+			for (const auto device : devices) {
+				const auto encode = [&](const RE::BSFixedString& a_event) {
+					return Input::State::Encode(device, controlMap->GetMappedKey(a_event, device));
+				};
+				const auto forward = encode(userEvents->forward);
+				const auto back = encode(userEvents->back);
+				const auto strafeLeft = encode(userEvents->strafeLeft);
+				const auto strafeRight = encode(userEvents->strafeRight);
 
-			const auto held = [](std::uint32_t a_key) {
-				return a_key != RE::ControlMap::kInvalid && Input::State::IsHeld(a_key);
-			};
+				float x = 0.0f;
+				float y = 0.0f;
+				if (Input::State::IsHeld(forward)) { y += 1.0f; }
+				if (Input::State::IsHeld(back)) { y -= 1.0f; }
+				if (Input::State::IsHeld(strafeRight)) { x += 1.0f; }
+				if (Input::State::IsHeld(strafeLeft)) { x -= 1.0f; }
 
-			if (held(forward)) { axis.y += 1.0f; }
-			if (held(back)) { axis.y -= 1.0f; }
-			if (held(right)) { axis.x += 1.0f; }
-			if (held(left)) { axis.x -= 1.0f; }
+				BD("  input: {} bound fwd=0x{:X} back=0x{:X} strafeL=0x{:X} strafeR=0x{:X} -> held (x {:.2f}, y {:.2f})",
+					device == RE::INPUT_DEVICE::kKeyboard ? "keyboard" : "gamepad",
+					forward, back, strafeLeft, strafeRight, x, y);
 
-			BD("  input: bound keys fwd=0x{:X} back=0x{:X} strafeL=0x{:X} strafeR=0x{:X} -> keys (x {:.2f}, y {:.2f})",
-				forward, back, left, right, axis.x, axis.y);
-
-			if (axis.x != 0.0f || axis.y != 0.0f) {
-				axis.ok = true;
-				axis.source = "movement keys";
+				if (x != 0.0f || y != 0.0f) {
+					axis.x = x;
+					axis.y = y;
+					axis.ok = true;
+					axis.source = device == RE::INPUT_DEVICE::kKeyboard ? "movement keys" : "gamepad movement buttons";
+					return axis;
+				}
 			}
 			return axis;
 		}
 
-		// The stick (or anything else the engine chose to put in the vector).
+		// The left stick, straight off the thumbstick events: raw device state, exactly
+		// like the keys above. PlayerControls::data.moveInputVec is not usable for this -
+		// in this runtime it reads as (0, input length), never signed, so it cannot tell
+		// forward from back or left from right.
 		InputAxis ReadStickAxis()
 		{
 			InputAxis axis;
-			if (auto* controls = RE::PlayerControls::GetSingleton()) {
-				axis.x = controls->data.moveInputVec.x;
-				axis.y = controls->data.moveInputVec.y;
+			if (!Input::State::StickSeen()) {
+				return axis;
 			}
+
+			axis.x = Input::State::s_stickX.load(std::memory_order_relaxed);
+			axis.y = Input::State::s_stickY.load(std::memory_order_relaxed);
 			const float magnitude = std::sqrt(axis.x * axis.x + axis.y * axis.y);
-			BD("  input: moveInputVec (x {:.3f}, y {:.3f}) magnitude {:.3f}", axis.x, axis.y, magnitude);
+			BD("  input: left stick (x {:.3f}, y {:.3f}) magnitude {:.3f}", axis.x, axis.y, magnitude);
+
 			if (magnitude >= kInputDeadzone) {
 				axis.ok = true;
-				axis.source = "stick (moveInputVec)";
+				axis.fromStick = true;
+				axis.source = "left stick";
 			}
 			return axis;
 		}
 
-		// Both sources, but never summed: for the keyboard the vector already carries
-		// the length of the input on one axis (W+D reads as y 1.414, x 0), so adding the
-		// two would count forward twice. The keys win when they have anything to say.
+		// The same list as the keys: a stick that is pushed clearly wins, otherwise the
+		// keys do, so a drifting stick never fights the keyboard.
 		InputAxis ReadInputAxis()
 		{
-			auto keys = ReadKeyAxis();
+			const auto stick = ReadStickAxis();
+			if (stick.ok && std::sqrt(stick.x * stick.x + stick.y * stick.y) >= kStickPriority) {
+				return stick;
+			}
+			const auto keys = ReadBoundMovementAxis();
 			if (keys.ok) {
 				return keys;
 			}
-			return ReadStickAxis();
+			return stick;
 		}
 
 		DirectionResult ResolveDirection(RE::PlayerCharacter* a_player)
 		{
 			DirectionResult result;
 
-			const auto axis = ReadInputAxis();
-			const float inputMagnitude = std::sqrt(axis.x * axis.x + axis.y * axis.y);
+			auto axis = ReadInputAxis();
+			float inputMagnitude = std::sqrt(axis.x * axis.x + axis.y * axis.y);
 			BD("  direction: input axis (x {:.3f}, y {:.3f}) magnitude {:.3f} source='{}'",
 				axis.x, axis.y, inputMagnitude, axis.source);
 
@@ -183,23 +202,38 @@ namespace BlinkDash
 			const float speed = velocity.Length();
 			BD("  direction: horizontal velocity = {} speed = {:.1f}", Fmt(velocity), speed);
 
+			// The frame the engine moves the character in.
+			const RE::NiPoint3 forward{ std::sin(frameYaw), std::cos(frameYaw), 0.0f };
+			const RE::NiPoint3 right{ std::cos(frameYaw), -std::sin(frameYaw), 0.0f };
+
 			if (inputMagnitude >= kInputDeadzone) {
-				// The direction the player is asking for, in the camera's frame (which
-				// is also the frame the engine moves the character in).
-				const RE::NiPoint3 forward{ std::sin(frameYaw), std::cos(frameYaw), 0.0f };
-				const RE::NiPoint3 right{ std::cos(frameYaw), -std::sin(frameYaw), 0.0f };
+				if (axis.fromStick && speed > kVelocityThreshold) {
+					// Nothing documents the sign the stick arrives in, and the engine's own
+					// vector cannot be used to find out. While the character is moving the
+					// movement is the ground truth, so settle each axis against it.
+					const float movedForward = velocity.x * forward.x + velocity.y * forward.y;
+					const float movedRight = velocity.x * right.x + velocity.y * right.y;
+					if (axis.y * movedForward < 0.0f) {
+						BD("  direction: stick y {:.3f} points against the movement ({:.1f}), flipping", axis.y, movedForward);
+						axis.y = -axis.y;
+					}
+					if (axis.x * movedRight < 0.0f) {
+						BD("  direction: stick x {:.3f} points against the movement ({:.1f}), flipping", axis.x, movedRight);
+						axis.x = -axis.x;
+					}
+				}
 				result.dir = forward * axis.y + right * axis.x;
 				result.source = axis.source;
 				BD("  direction: input in yaw frame, forward={} right={}", Fmt(forward), Fmt(right));
 			} else if (speed > kVelocityThreshold) {
-				// Nothing held but the player is moving: root motion, a scripted slide,
-				// a knockback. The velocity is the only honest answer there.
+				// Nothing held but the player is moving anyway: root motion, a scripted
+				// slide, a knockback. The velocity is the only honest answer there.
 				result.dir = velocity;
 				result.source = "horizontal velocity (nothing held)";
 			} else {
-				// Standing still and holding nothing: blink where the player faces.
-				result.dir = RE::NiPoint3{ std::sin(playerYaw), std::cos(playerYaw), 0.0f };
-				result.source = "player facing (nothing held, not moving)";
+				result.source = "nothing held and not moving";
+				BD("  direction: REJECTED, {}", result.source);
+				return result;
 			}
 
 			result.dir.z = 0.0f;

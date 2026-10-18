@@ -28,17 +28,21 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 
 ## Direction and the tap window
 
-- The direction is worked out here, not taken from the engine's player facing:
-  - **Keys first.** The movement keys are looked up in the game's own control map at blink time (so
-    rebinding and non-QWERTY layouts work) and the keys that are down are read out of the input sink.
-    `PlayerControls::data.moveInputVec` cannot do this alone: the engine leaves its strafe axis at 0 for the
-    keyboard, because the character turns towards the movement instead of strafing.
-  - **Then the stick.** With nothing bound or held, the engine vector is used, which is what a gamepad
-    fills in (and the two are never summed: for the keyboard that vector already carries the input length
-    on one axis).
-  - **Then velocity.** Nothing held but the player is moving anyway - root motion, a slide, a knockback.
-  - **Then facing.** Nothing held and not moving: blink straight ahead.
+Everything comes off the input the mod itself collects, so the keyboard and the pad are on the same list:
+
+- **Movement inputs.** The game's own control map is asked which keys/buttons are bound to Forward, Back,
+  Strafe Left and Strafe Right right now (so rebinding and non-QWERTY layouts work), and those are matched
+  against the button state the input sink collected. The left thumbstick is read from the thumbstick events
+  the same way — a stick pushed clearly beats the keys, otherwise the keys do, so a drifting stick never
+  fights the keyboard.
+  `PlayerControls::data.moveInputVec` is deliberately **not** used: in this runtime it reads as `(0, input
+  length)`, never signed, so it cannot tell forward from back or left from right.
+- **Movement.** With nothing held but the player moving anyway — root motion, a scripted slide, a knockback
+  — the horizontal velocity is the direction.
+- **Nothing.** Not holding anything and not moving: no blink. The hotkey does nothing.
 - The input is applied in the camera's yaw, which is the frame the engine moves the character in.
+- The hotkey can be bound to a keyboard key, a mouse button or a **gamepad button** (the rebind capture takes
+  any of them).
 - The hotkey is **tap to blink**: press and release inside the retrigger delay (default 200 ms) fires one
   blink. Holding it longer does nothing, so it is safe to put on sprint or jump.
 - Blinks are queued from the input thread and executed on a game thread.
@@ -156,9 +160,10 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 `BlinkDash.json` is written with these defaults on first run and is **not** overwritten by builds, so your
 saved settings survive.
 
-Hotkey encoding: `0x100 | n` = mouse button n (0=LMB, 1=RMB, 2=MMB, 3=MB4...), otherwise a DirectInput
-keyboard scancode. That is the same numbering SKSE's `InputMap` uses, so the menu shows the engine's own
-key name (and `Left Mouse` / `Mouse 4` / ... for the mouse half).
+Hotkey encoding: `0x100 | n` = mouse button n (0=LMB, 1=RMB, 2=MMB, 3=MB4...), `0x1000 | n` = gamepad
+button n (dpad up/down/left/right, start, back, thumb clicks, shoulders, A/B/X/Y, LT/RT), otherwise a
+DirectInput keyboard scancode. That is the same numbering SKSE's `InputMap` uses, so the menu shows the
+engine's own key name, `Mouse 4`, or `Gamepad A`.
 
 Distance is clamped to 100..2020 units, loaded or typed: 2020 is the hard cap the blink itself applies, so
 the setting can no longer ask for travel that will never happen. It is a maximum, not a promise: the rays
