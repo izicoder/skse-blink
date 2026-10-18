@@ -23,6 +23,8 @@ namespace BlinkDash::UI
 		constexpr float kMaxStaminaCost = 100.0f;
 		constexpr float kMinTapWindowMs = 20.0f;
 		constexpr float kMaxTapWindowMs = 1000.0f;
+		constexpr float kMinCooldownMs = 0.0f;
+		constexpr float kMaxCooldownMs = 2000.0f;
 
 		// Sliders fire every frame while dragging, so writes are debounced; anything
 		// discrete (checkbox, dropdown, rebind, reset) saves immediately, and a
@@ -33,6 +35,10 @@ namespace BlinkDash::UI
 		constexpr float kResetConfirmSeconds = 4.0f;
 
 		constexpr float kHintIndent = 14.0f;
+
+		// The plan view keeps a floor under its span, so a ten unit blink does not zoom in
+		// until the 24 unit body probes look like full length rays.
+		constexpr float kMinDiagramSpan = 120.0f;
 
 		constexpr ImGui::ImVec4 kHintColor{ 0.62f, 0.62f, 0.62f, 1.0f };
 		constexpr ImGui::ImVec4 kValueColor{ 0.80f, 0.90f, 1.00f, 1.0f };
@@ -256,8 +262,27 @@ namespace BlinkDash::UI
 			Hint("Puts every setting above back to its default.");
 		}
 
-		// The plan view of a blink: world XY, north up, scaled to fit the box. Shared by
-		// the menu panel and the in-game overlay.
+		// Which family a recorded segment belongs to, so the drawing can tell them apart.
+		enum class RayKind
+		{
+			kObstacle,  // the chest / head rays that decide the travel
+			kFit,       // the body volume probes at the landing spot
+			kGround     // the vertical ground probes (shown as a tick, they have no XY extent)
+		};
+
+		RayKind KindOf(const char* a_label)
+		{
+			const std::string_view label{ a_label };
+			if (label.starts_with("ground")) {
+				return RayKind::kGround;
+			}
+			if (label.starts_with("fit")) {
+				return RayKind::kFit;
+			}
+			return RayKind::kObstacle;
+		}
+
+		// The plan view of a blink: world XY, north up, scaled to fit the box.
 		void DrawBlinkDiagram(ImGui::ImDrawList* a_drawList, const Debug::Snapshot& a_snapshot, const ImGui::ImVec2 a_origin, float a_size)
 		{
 			if (!a_drawList || a_size < 60.0f) {
@@ -283,8 +308,10 @@ namespace BlinkDash::UI
 				include(a_snapshot.segments[i].to);
 			}
 
-			const float span = (std::max)((std::max)(maxX - minX, maxY - minY), 1.0f);
-			const float pad = 10.0f;
+			// A floor under the span, so a blink of ten units does not zoom to the point
+			// where the short body probes look like full length rays.
+			const float span = (std::max)((std::max)((std::max)(maxX - minX, maxY - minY), kMinDiagramSpan), 1.0f);
+			const float pad = 12.0f;
 			const float usable = a_size - pad * 2.0f;
 			const auto project = [&](const RE::NiPoint3& a_point) {
 				const float px = pad + (a_point.x - minX) / span * usable;
@@ -292,39 +319,63 @@ namespace BlinkDash::UI
 				return ImGui::ImVec2{ a_origin.x + px, a_origin.y + py };
 			};
 
-			ImGui::ImDrawListManager::AddRectFilled(a_drawList, a_origin, boxMax, IM_COL32(16, 16, 20, 210), 4.0f, 0);
+			ImGui::ImDrawListManager::AddRectFilled(a_drawList, a_origin, boxMax, IM_COL32(12, 12, 16, 220), 4.0f, 0);
+			ImGui::ImDrawListManager::AddRect(a_drawList, a_origin, boxMax, IM_COL32(90, 90, 110, 160), 4.0f, 0, 1.0f);
 
 			for (std::size_t i = 0; i < a_snapshot.count; ++i) {
 				const auto& segment = a_snapshot.segments[i];
-				const auto  colour = segment.hit ? IM_COL32(230, 90, 90, 255) : IM_COL32(110, 220, 120, 255);
-				ImGui::ImDrawListManager::AddLine(a_drawList, project(segment.from), project(segment.to), colour, 2.0f);
+				const auto  at = project(segment.to);
+
+				switch (KindOf(segment.label)) {
+				case RayKind::kGround:
+					// Vertical: it has no extent in the plan view, so mark the spot.
+					ImGui::ImDrawListManager::AddLine(a_drawList,
+						ImGui::ImVec2{ at.x, at.y - 7.0f }, ImGui::ImVec2{ at.x, at.y + 7.0f },
+						segment.hit ? IM_COL32(120, 190, 250, 230) : IM_COL32(80, 110, 140, 180), 2.0f);
+					break;
+				case RayKind::kFit:
+					// Only the ones that found something are worth drawing: they are 24
+					// units long against a 300 unit blink.
+					if (segment.hit) {
+						ImGui::ImDrawListManager::AddLine(a_drawList, project(segment.from), at,
+							IM_COL32(240, 170, 70, 230), 2.0f);
+					}
+					break;
+				case RayKind::kObstacle:
+					ImGui::ImDrawListManager::AddLine(a_drawList, project(segment.from), at,
+						segment.hit ? IM_COL32(230, 80, 80, 255) : IM_COL32(90, 210, 110, 200), 2.0f);
+					break;
+				}
 			}
 
 			const auto feet = project(a_snapshot.feet);
 			const auto landing = project(a_snapshot.landing);
-			ImGui::ImDrawListManager::AddLine(a_drawList, feet, landing, IM_COL32(255, 255, 255, 200), 2.0f);
+			ImGui::ImDrawListManager::AddLine(a_drawList, feet, landing, IM_COL32(255, 255, 255, 160), 1.5f);
 
 			const auto dot = [&](const ImGui::ImVec2 a_at, ImGui::ImU32 a_colour) {
 				ImGui::ImDrawListManager::AddRectFilled(a_drawList,
-					ImGui::ImVec2{ a_at.x - 3.0f, a_at.y - 3.0f },
-					ImGui::ImVec2{ a_at.x + 3.0f, a_at.y + 3.0f },
+					ImGui::ImVec2{ a_at.x - 4.0f, a_at.y - 4.0f },
+					ImGui::ImVec2{ a_at.x + 4.0f, a_at.y + 4.0f },
 					a_colour, 0.0f, 0);
 			};
-			dot(feet, IM_COL32(255, 220, 90, 255));
-			dot(landing, IM_COL32(90, 200, 255, 255));
+			dot(feet, IM_COL32(255, 210, 80, 255));
+			dot(landing, IM_COL32(80, 190, 255, 255));
+
+			// A north arrow and a scale bar, so the picture is not just coloured lines.
+			ImGui::ImDrawListManager::AddText(a_drawList, ImGui::ImVec2{ boxMax.x - 16.0f, a_origin.y + 4.0f },
+				IM_COL32(200, 200, 210, 200), "N");
+
+			const auto scale = std::format("{:.0f}u", span);
+			ImGui::ImDrawListManager::AddLine(a_drawList,
+				ImGui::ImVec2{ a_origin.x + pad, boxMax.y - 8.0f },
+				ImGui::ImVec2{ boxMax.x - pad, boxMax.y - 8.0f },
+				IM_COL32(160, 160, 175, 180), 1.0f);
+			ImGui::ImDrawListManager::AddText(a_drawList,
+				ImGui::ImVec2{ a_origin.x + pad + 4.0f, boxMax.y - 22.0f }, IM_COL32(190, 190, 200, 210), scale.c_str());
 		}
 
-		// Menu version: the diagram sits in the panel, so reserve its space too.
-		void RenderBlinkDiagram(const Debug::Snapshot& a_snapshot)
-		{
-			const float size = (std::min)(320.0f, ImGui::GetContentRegionAvail().x);
-			DrawBlinkDiagram(ImGui::GetWindowDrawList(), a_snapshot, ImGui::GetCursorScreenPos(), size);
-			ImGui::Dummy(ImGui::ImVec2{ size, size });
-		}
-
-		// In-game version: the same diagram in the top left corner of the screen, drawn on
-		// the HUD so it can be read while playing. Registered as a HUD element, so it runs
-		// during the framework's render pass with the game still live.
+		// In-game view: a labelled panel in the top left, drawn on the HUD through the
+		// framework's HUD element hook, so it can be read while playing.
 		void __stdcall RenderDebugOverlay()
 		{
 			if (!Config::Get().debugOverlay) {
@@ -352,23 +403,64 @@ namespace BlinkDash::UI
 					frame, io->DisplaySize.x, io->DisplaySize.y, snapshot.count);
 			}
 
-			constexpr float kTextSize = 240.0f;
-			const ImGui::ImVec2 origin{ 24.0f, 24.0f };
+			// Clear of the compass, which owns the very top left of the HUD.
+			const ImGui::ImVec2 panel{ 20.0f, 96.0f };
+			constexpr float kPanelWidth = 470.0f;
+			constexpr float kBoxSize = 190.0f;
+			constexpr float kRowHeight = 18.0f;
+			constexpr float kTextX = 12.0f;
+			const float     detailsX = panel.x + kTextX + kBoxSize + 14.0f;
 
-			ImGui::ImDrawListManager::AddText(drawList, origin, IM_COL32(255, 255, 255, 235), snapshot.headline.c_str());
-			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ origin.x, origin.y + 20.0f }, kTextSize);
+			float panelBottom = panel.y + kRowHeight * 3.0f + kBoxSize + 26.0f;
 
-			float y = origin.y + 20.0f + kTextSize + 6.0f;
-			int   shown = 0;
-			for (std::size_t i = 0; i < snapshot.count && shown < 4; ++i) {
+			ImGui::ImDrawListManager::AddRectFilled(drawList, panel,
+				ImGui::ImVec2{ panel.x + kPanelWidth, panelBottom }, IM_COL32(10, 10, 14, 205), 6.0f, 0);
+			ImGui::ImDrawListManager::AddRect(drawList, panel,
+				ImGui::ImVec2{ panel.x + kPanelWidth, panelBottom }, IM_COL32(95, 95, 115, 170), 6.0f, 0, 1.0f);
+
+			float y = panel.y + 8.0f;
+			const auto row = [&](ImGui::ImU32 a_colour, const std::string& a_text) {
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ panel.x + kTextX, y }, a_colour, a_text.c_str());
+				y += kRowHeight;
+			};
+
+			row(IM_COL32(255, 255, 255, 240), snapshot.headline);
+			row(IM_COL32(215, 215, 225, 230),
+				std::format("travel {:.0f} of {:.0f}   blocked {}   body fit pulls {}   source: {}",
+					snapshot.travel, snapshot.requested, snapshot.blocked ? "yes" : "no", snapshot.pulls,
+					snapshot.grounded ? "on ground" : "airborne"));
+			row(IM_COL32(215, 215, 225, 230),
+				std::format("direction ({:.2f}, {:.2f})   {}", snapshot.direction.x, snapshot.direction.y,
+					snapshot.grounded ? "ground: snapped" : "ground: kept the height (airborne)"));
+
+			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ panel.x + kTextX, y + 4.0f }, kBoxSize);
+
+			// Legend and the interesting details, to the right of the diagram.
+			float legendY = y + 4.0f;
+			const auto legend = [&](ImGui::ImU32 a_colour, const char* a_text) {
+				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ detailsX, legendY }, a_colour, a_text);
+				legendY += kRowHeight;
+			};
+			legend(IM_COL32(255, 210, 80, 255), "[] you, where the blink started");
+			legend(IM_COL32(80, 190, 255, 255), "[] target, where you land");
+			legend(IM_COL32(90, 210, 110, 220), "green chest/head ray, path clear");
+			legend(IM_COL32(230, 80, 80, 255), "red chest/head ray, it hit");
+			legend(IM_COL32(240, 170, 70, 230), "orange body probe that hit");
+			legend(IM_COL32(120, 190, 250, 230), "blue ground probe");
+
+			legendY += 6.0f;
+			int shown = 0;
+			for (std::size_t i = 0; i < snapshot.count && shown < 5; ++i) {
 				const auto& segment = snapshot.segments[i];
 				if (!segment.hit) {
 					continue;
 				}
 				++shown;
-				const auto text = std::format("{} hit  frac {:.2f}", segment.label, segment.fraction);
-				ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ origin.x, y }, IM_COL32(240, 150, 150, 230), text.c_str());
-				y += 16.0f;
+				legend(IM_COL32(235, 150, 150, 235),
+					std::format("{} hit at {:.0f}% of its length", segment.label, segment.fraction * 100.0f).c_str());
+			}
+			if (shown == 0) {
+				legend(IM_COL32(120, 220, 140, 235), "nothing hit, the whole path was clear");
 			}
 		}
 
@@ -380,36 +472,7 @@ namespace BlinkDash::UI
 				BD("ui: debugOverlay -> {}", settings.debugOverlay);
 				MarkChanged("debugOverlay");
 			}
-			Hint("Draws the last blink's rays, landing spot and ground probes in the top left of the screen while you play, and as a panel below. Red segments hit something, green ones are clear.");
-
-			if (!settings.debugOverlay) {
-				return;
-			}
-
-			Debug::Snapshot snapshot;
-			if (!Debug::Latest(snapshot)) {
-				Paragraph("No blink recorded yet - blink once and reopen this menu.");
-				return;
-			}
-
-			ImGui::TextUnformatted(snapshot.summary.c_str());
-			ImGui::Spacing();
-			RenderBlinkDiagram(snapshot);
-
-			ImGui::Spacing();
-			int shown = 0;
-			for (std::size_t i = 0; i < snapshot.count; ++i) {
-				const auto& segment = snapshot.segments[i];
-				if (!segment.hit || shown >= 6) {
-					continue;
-				}
-				++shown;
-				ImGui::TextDisabled("%s hit at (%.0f, %.0f, %.0f)  fraction %.3f",
-					segment.label, segment.to.x, segment.to.y, segment.to.z, segment.fraction);
-			}
-			if (shown == 0) {
-				ImGui::TextDisabled("every probe of that blink was clear");
-			}
+			Hint("Draws the last blink in game, top left of the screen, while you play: the rays, the landing spot, the ground probes and the numbers. Nothing is drawn here.");
 		}
 
 		void __stdcall Render()
@@ -453,6 +516,15 @@ namespace BlinkDash::UI
 				MarkChanged("retriggerDelay");
 			}
 			Hint("The hotkey has to be pressed and released inside this window to count as a tap.");
+
+			ImGui::SetNextItemWidth(itemWidth);
+			float cooldownMs = settings.cooldown * 1000.0f;
+			if (ImGui::SliderFloat("Cooldown (ms)", &cooldownMs, kMinCooldownMs, kMaxCooldownMs, "%.0f")) {
+				settings.cooldown = cooldownMs / 1000.0f;
+				BD("ui: cooldown -> {:.0f}ms ({:.3f}s)", cooldownMs, settings.cooldown);
+				MarkChanged("cooldown");
+			}
+			Hint("How long to wait after a successful blink before the next one. 0 lets every tap blink.");
 
 			ImGui::SeparatorText("Effect");
 			Paragraph("A vanilla effect shader played on you when you blink. No ESP, no new records.");

@@ -9,15 +9,20 @@ This is the **C++ SKSE plugin only**. The old Papyrus/PEX/Mutagen attempt has be
 ## Features
 
 - **Blink hotkey** (default: **Mouse 4**). Hold a direction (WASD or stick) and **tap** the hotkey: the blink
-  goes the way you are pushing. Hold nothing and it blinks where you face.
+  goes the way you are pushing. Hold nothing, or stand still, and nothing happens.
 - **Collision detection**: Havok rays at chest and head height find the first wall/obstacle in the blink
   path, and a body-volume probe at the landing spot catches the corners a single line can slip past. The
   configured distance is a **maximum**: whatever the rays find shortens the blink instead of cancelling it.
+  Close up against geometry there is a **deadzone** (50 units) where the blink refuses outright, which is
+  what stops a spammed hotkey from creeping through a wall a few units at a time.
+- **Momentum**: the velocity the character controller had before the teleport is put straight back
+  afterwards, so blinking in mid air keeps the jump and the dash going instead of stopping dead.
 - **Ground snap**: only while you are standing on something. A blink in mid air keeps your height, so a
   jump is not dragged back down to the floor.
 - **Blink effect shader**: any vanilla `TESEffectShader` in your load order, picked from a dropdown.
   No ESP, no new records, no sound.
-- **Stamina cost** (charged in combat only) and a **tap window** (see retrigger delay below).
+- **Stamina cost** (charged in combat only), a **tap window** and an optional **cooldown** (default 0,
+  i.e. off) between blinks.
 - **SKSE Menu Framework tab** ("Blink Dash"): hotkey rebind, distance, stamina cost, tap window, the
   effect shader dropdown and a debug view, each with a one line explanation, plus a Reset defaults button.
   There is no Test blink and no Save/Apply: every change saves itself.
@@ -44,14 +49,16 @@ Everything comes off the input the mod itself collects, so the keyboard and the 
 - The hotkey can be bound to a keyboard key, a mouse button or a **gamepad button** (the rebind capture takes
   any of them).
 - The hotkey is **tap to blink**: press and release inside the retrigger delay (default 200 ms) fires one
-  blink. Holding it longer does nothing, so it is safe to put on sprint or jump.
+  blink. Holding it longer does nothing, so it is safe to put on sprint or jump. After a blink that actually
+  happened, the optional **cooldown** (default 0) has to pass before the next tap is accepted.
 - Blinks are queued from the input thread and executed on a game thread.
 
 ## What the blink touches
 
-Only three things: it reads the player's velocity and collision filter, casts read-only rays into the Havok
-world, then writes the player's position, damages the stamina actor value (in combat) and plays an effect
-shader. No animation graph call, no ragdoll, no force or impulse, no velocity write. It is a dislocation.
+It reads the player's velocity and collision filter, casts read-only rays into the Havok world, then writes
+the player's position, puts the character controller's velocity back the way it found it (that is the
+momentum, not new movement), damages the stamina actor value (in combat) and plays an effect shader. No
+animation graph call, no ragdoll, no force or impulse, no engine-driven locomotion.
 
 ## Effects
 
@@ -154,6 +161,7 @@ $env:VCPKG_ROOT = "E:\dev\vibe\skyrim-blink\.vcpkg"
 | Distance | 300 units |
 | Stamina cost | 10 (charged in combat only) |
 | Retrigger delay | 200 ms |
+| Cooldown | 0 ms (off) |
 | Effect shader | `Skyrim.esm:000E5C` (Nightingale invisibility) |
 | Debug view | off |
 
@@ -169,23 +177,40 @@ Distance is clamped to 100..2020 units, loaded or typed: 2020 is the hard cap th
 the setting can no longer ask for travel that will never happen. It is a maximum, not a promise: the rays
 shorten the travel when something is in the way, and only give up when there is no room left at all.
 
-There is no `enabled`, `mode`, `cooldown`, `clearance`, `minDistance` or `groundSnap` option any more.
-Clearance (40), the minimum travel (10), the two obstacle ray heights (64 / 120), the body probe (24 units
-at 48 / 120), the step-back (25 units, 8 tries), the ground snap band (+/-256 units) and the "standing on
-ground" tolerance (32 units) are internal constants.
+There is no `enabled`, `mode`, `minDistance` or `groundSnap` option any more.
+Clearance (40), the shortest blink (10), the **deadzone** (clearance + shortest = 50 units: inside it the
+blink refuses), the two obstacle ray heights (64 / 120), the body probe (24 units at 48 / 120), the
+step-back (25 units, 8 tries), the ground snap band (+/-256 units) and the "standing on ground" tolerance
+(32 units) are internal constants.
+
+## Why a blink can refuse
+
+Logged with the reason every time:
+
+| Reason | Means |
+|---|---|
+| nothing held and not moving | no direction to blink in |
+| not enough stamina | in combat and below the configured cost |
+| cooldown | inside the configured cooldown after the last successful blink |
+| inside the blink deadzone | something solid is within 50 units |
+| no clear landing spot for the body | the rays were clear but the body would not fit at the landing |
+| no blink direction | the input produced a degenerate direction |
 
 ## Debug view
 
-Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn as a plan
-view - north up, the obstacle rays in red when they hit something and green when they are clear, the body
-fit probes, the direction and the landing spot, with the numbers that produced them:
+Tick **Draw what the last blink probed** in the menu's Debug section and the last blink is drawn **in game,
+in the top left of the screen**, where it can be read while playing: blink, look, blink again. Nothing is
+drawn in the menu itself. It is a labelled panel:
 
-- **In game**, in the top left corner of the screen, so it can be read while playing - blink, look, blink
-  again. It appears through the menu framework's HUD element hook, so the game keeps running normally.
-- **In the menu**, in the Debug section, as a panel.
+- a title line and two rows of numbers: travel taken vs requested, blocked or not, how many times the body
+  fit had to step the landing back, the direction, and whether the ground was snapped or the height kept,
+- a **plan view** (north up, `N` marked, with a scale bar): the chest/head rays in green when clear and red
+  when they hit, orange for a body probe that found something, blue ticks for the vertical ground probes,
+  a yellow square for where you were and a blue one for where you land,
+- a legend and the list of what actually hit, with how far along each ray.
 
-Both are drawn with plain 2D drawing inside the framework's own render pass: no camera maths, no world
-projection, nothing that can disagree with what the rays actually did.
+It is drawn through the menu framework's HUD element hook with plain 2D drawing in the corner of the screen:
+no camera maths, no world projection, nothing that can disagree with what the rays actually did.
 
 ## Known crash (fixed by removal)
 

@@ -14,6 +14,7 @@ namespace BlinkDash
 		constexpr float kMaxStaminaCost = 1000.0f;
 		constexpr float kMinRetrigger = 0.02f;   // below this a human cannot tap it anyway
 		constexpr float kMaxRetrigger = 2.0f;
+		constexpr float kMaxCooldown = 5.0f;
 
 		// Same path discovery as before: the JSON sits next to the loaded DLL,
 		// so under MO2 it lives inside the mod folder and not the game install.
@@ -43,6 +44,7 @@ namespace BlinkDash
 				{ "distance", a_settings.distance },
 				{ "staminaCost", a_settings.staminaCost },
 				{ "retriggerDelay", a_settings.retriggerDelay },
+				{ "cooldown", a_settings.cooldown },
 				{ "effectShader", a_settings.effectShader },
 				{ "debugOverlay", a_settings.debugOverlay },
 			};
@@ -59,8 +61,9 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) effectShader='{}' debugOverlay={}",
+			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) effectShader='{}' debugOverlay={}",
 			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
+			s.cooldown, s.cooldown * 1000.0f,
 			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay);
 	}
 
@@ -99,6 +102,11 @@ namespace BlinkDash
 			BDW("config: retriggerDelay {:.3f}s out of range, clamping to [{:.2f}, {:.2f}]",
 				s.retriggerDelay, kMinRetrigger, kMaxRetrigger);
 			s.retriggerDelay = std::clamp(s.retriggerDelay, kMinRetrigger, kMaxRetrigger);
+			changed = true;
+		}
+		if (s.cooldown < 0.0f || s.cooldown > kMaxCooldown) {
+			BDW("config: cooldown {:.3f}s out of range, clamping to [0, {:.2f}]", s.cooldown, kMaxCooldown);
+			s.cooldown = std::clamp(s.cooldown, 0.0f, kMaxCooldown);
 			changed = true;
 		}
 		if (s.effectShader.size() > 64) {
@@ -168,6 +176,9 @@ namespace BlinkDash
 			}
 			if (json.contains("retriggerDelay")) {
 				s.retriggerDelay = json.at("retriggerDelay").get<float>();
+			}
+			if (json.contains("cooldown")) {
+				s.cooldown = json.at("cooldown").get<float>();
 			}
 			if (json.contains("effectShader")) {
 				s.effectShader = json.at("effectShader").get<std::string>();

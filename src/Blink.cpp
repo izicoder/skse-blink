@@ -21,7 +21,10 @@ namespace BlinkDash
 		constexpr float kHeadHeight = 120.0f;      // upper obstacle ray above the feet
 		constexpr float kMaxDistanceCap = 2020.0f;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
-		constexpr float kMinTravel = 10.0f;        // shorter than this is not worth a blink
+		constexpr float kMinTravel = 10.0f;        // shortest blink worth doing
+		// No blink at all when the nearest obstacle is inside this: it is what stops a
+		// spammed hotkey from creeping forward a few units at a time through a wall.
+		constexpr float kDeadzone = kClearance + kMinTravel;
 		constexpr float kInputDeadzone = 0.15f;    // input below this counts as "not holding a direction"
 		constexpr float kStickPriority = 0.5f;     // a stick pushed past this beats the movement keys
 		constexpr float kVelocityThreshold = 25.0f;  // units/second below this counts as standing still
@@ -46,6 +49,9 @@ namespace BlinkDash
 		std::atomic<bool> blinkQueued{ false };
 		std::atomic<std::uint64_t> requestSeq{ 0 };
 		std::atomic<std::uint64_t> ignoreCount{ 0 };
+
+		// Clock of the last successful blink, for the cooldown.
+		std::atomic<float> lastBlinkClock{ -1.0e9f };
 
 		std::string Fmt(const RE::NiPoint3& a_point)
 		{
@@ -457,7 +463,18 @@ namespace BlinkDash
 				return false;
 			}
 
-			BD("blink[{}] clock={:.3f}s", a_seq, Now());
+			const float now = Now();
+			BD("blink[{}] clock={:.3f}s", a_seq, now);
+
+			// Cooldown: off unless configured, and only successful blinks count.
+			if (settings.cooldown > 0.0f) {
+				const float since = now - lastBlinkClock.load(std::memory_order_acquire);
+				if (since < settings.cooldown) {
+					BDI("blink[{}] REJECTED: cooldown, {:.0f}ms since the last blink of {:.0f}ms",
+						a_seq, since * 1000.0f, settings.cooldown * 1000.0f);
+					return false;
+				}
+			}
 
 			RE::ActorValueOwner* staminaOwner = nullptr;
 
@@ -470,7 +487,16 @@ namespace BlinkDash
 			if (settings.staminaCost <= 0.0f) {
 				BD("blink[{}] stamina: no cost configured, skipping the check", a_seq);
 			} else if (!inCombat) {
-				BD("blink[{}] stamina: out of combat, no cost charged", a_seq);
+				// Log the value as well: a report of "stamina went down out of combat" can
+				// then be checked against what the blink actually saw at that moment.
+				float stamina = -1.0f;
+				if (auto* owner = player->AsActorValueOwner()) {
+					const auto vtable = *reinterpret_cast<const std::uintptr_t*>(owner);
+					if (vtable >= kMinPlausibleVtable) {
+						stamina = owner->GetActorValue(RE::ActorValue::kStamina);
+					}
+				}
+				BD("blink[{}] stamina: out of combat, no cost charged (stamina {:.1f}, untouched)", a_seq, stamina);
 			} else {
 				// NOTE: never call player->GetActorValue() / player->DamageActorValue()
 				// directly. Those use the ActorValueOwner base offset baked into the
@@ -535,7 +561,12 @@ namespace BlinkDash
 			float travel = distance;
 			if (blocked) {
 				const float clear = distance * nearest;
-				travel = (std::max)(clear - kClearance, kMinTravel);
+				if (clear < kDeadzone) {
+					BDI("blink[{}] REJECTED: obstacle is {:.1f} units away, inside the {:.0f} unit blink deadzone",
+						a_seq, clear, kDeadzone);
+					return false;
+				}
+				travel = clear - kClearance;
 				snapshot.shortened = true;
 				BD("blink[{}] blocked at {:.1f} units, pulled back by clearance {:.0f} -> travelling {:.1f}",
 					a_seq, clear, kClearance, travel);
@@ -599,7 +630,49 @@ namespace BlinkDash
 			}
 			BD("blink[{}] landing point = {} ({})", a_seq, Fmt(landing), heightSource);
 
+			// Momentum: moving the player resets the velocity the character controller
+			// carries, and that velocity is what a jump and a dash are made of. Whatever it
+			// was before the teleport is put back afterwards, so blinking in mid air keeps
+			// going instead of stopping dead. Read and written as-is: same units, same
+			// source, so nothing here has to guess a scale.
+			auto*    controller = player->GetCharController();
+			RE::hkVector4 velocityBefore{};
+			bool     velocityViaGetter = false;
+			if (controller) {
+				controller->GetLinearVelocityImpl(velocityBefore);
+				velocityViaGetter = velocityBefore.Dot3(velocityBefore) > 1e-6f;
+				if (!velocityViaGetter) {
+					// Some controllers keep the integrated velocity in these instead.
+					if (controller->initialVelocity.Dot3(controller->initialVelocity) > 1e-6f) {
+						velocityBefore = controller->initialVelocity;
+					} else if (controller->outVelocity.Dot3(controller->outVelocity) > 1e-6f) {
+						velocityBefore = controller->outVelocity;
+					}
+				}
+				BD("blink[{}] momentum: controller 0x{:X} velocity {:.3f} (via getter={}, initial={:.3f}, out={:.3f})",
+					a_seq, reinterpret_cast<std::uintptr_t>(controller),
+					std::sqrt(velocityBefore.Dot3(velocityBefore)), velocityViaGetter,
+					std::sqrt(controller->initialVelocity.Dot3(controller->initialVelocity)),
+					std::sqrt(controller->outVelocity.Dot3(controller->outVelocity)));
+			} else {
+				BDW("blink[{}] momentum: no character controller, the velocity cannot be kept", a_seq);
+			}
+			const bool haveVelocity = velocityBefore.Dot3(velocityBefore) > 1e-6f;
+
 			player->SetPosition(landing, true);
+
+			if (controller && haveVelocity) {
+				if (velocityViaGetter) {
+					controller->SetLinearVelocityImpl(velocityBefore);
+				} else {
+					controller->initialVelocity = velocityBefore;
+					controller->outVelocity = velocityBefore;
+				}
+				RE::hkVector4 check{};
+				controller->GetLinearVelocityImpl(check);
+				BD("blink[{}] momentum: restored {:.3f} (now reads {:.3f})",
+					a_seq, std::sqrt(velocityBefore.Dot3(velocityBefore)), std::sqrt(check.Dot3(check)));
+			}
 
 			const RE::NiPoint3 after = player->GetPosition();
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
@@ -614,6 +687,7 @@ namespace BlinkDash
 			}
 
 			Effects::PlayOnPlayer("blink");
+			lastBlinkClock.store(now, std::memory_order_release);
 
 			snapshot.feet = feet;
 			snapshot.direction = direction.dir;
