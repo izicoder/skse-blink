@@ -98,9 +98,11 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 target_link_options(${PROJECT_NAME} PRIVATE "/MAP:${CMAKE_CURRENT_BINARY_DIR}/BlinkDash.map")
 
 # ---------------------------------------------------------------------------
-# Copy DLL into the MO2 mod folder on build
+# Copy DLL into the MO2 mod folder on build.
+# MOD_OUTPUT_FOLDER is not set by the committed preset: set it locally (for example
+# in a git-ignored CMakeUserPresets.json) to a mod folder to enable auto-deploy.
 # ---------------------------------------------------------------------------
-if(DEFINED MOD_OUTPUT_FOLDER)
+if(MOD_OUTPUT_FOLDER)
 	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${MOD_OUTPUT_FOLDER}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${PROJECT_NAME}>" "${MOD_OUTPUT_FOLDER}/SKSE/Plugins/"

@@ -9,8 +9,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
-        "MOD_OUTPUT_FOLDER": "C:/modding/MO2/mods/BlinkDash"
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
       }
     }
   ],

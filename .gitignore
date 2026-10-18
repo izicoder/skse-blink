@@ -1,6 +1,20 @@
+# Build output
 build/
+out/
+
+# Local vcpkg checkout (cloned by CMake on first configure)
 .vcpkg/
+
+# Cloned dependency (populated by CMakeLists.txt)
 extern/CommonLibSSE/
+
+# Per-machine CMake presets (holds local paths such as MOD_OUTPUT_FOLDER)
+CMakeUserPresets.json
+compile_commands.json
+.vs/
+.cache/
+
+# Editor / IDE / tooling
 *.user
 *.pdb
-
+*.log
