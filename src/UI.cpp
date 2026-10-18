@@ -37,11 +37,7 @@ namespace BlinkDash::UI
 			labelStorage.reserve(entries.size() + 1);
 			labelStorage.emplace_back("None");
 			for (const auto& entry : entries) {
-				if (entry.editorID.empty()) {
-					labelStorage.push_back(std::format("0x{:08X} ({})", entry.formID, entry.source));
-				} else {
-					labelStorage.push_back(std::format("{} (0x{:08X})", entry.editorID, entry.formID));
-				}
+				labelStorage.push_back(entry.Label());
 			}
 
 			labelPtrs.clear();
@@ -126,11 +122,6 @@ namespace BlinkDash::UI
 					settings.effectShader = (current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key();
 					BDI("ui: effect shader changed -> '{}'", settings.effectShader);
 					Effects::RefreshSelection();
-				}
-				ImGui::SameLine();
-				if (ImGui::Button("Preview")) {
-					BDI("ui: Preview effect pressed");
-					Effects::Preview();
 				}
 			}
 

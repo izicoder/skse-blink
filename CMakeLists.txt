@@ -102,7 +102,9 @@ if(DEFINED MOD_OUTPUT_FOLDER)
 	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${MOD_OUTPUT_FOLDER}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${PROJECT_NAME}>" "${MOD_OUTPUT_FOLDER}/SKSE/Plugins/"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/dist/BlinkDash.json" "${MOD_OUTPUT_FOLDER}/SKSE/Plugins/"
+		# BlinkDash.json is intentionally NOT copied: it holds the user's saved
+		# settings and the plugin writes it with the defaults on first run.
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/dist/BlinkDash.ShaderNames.json" "${MOD_OUTPUT_FOLDER}/SKSE/Plugins/"
 		VERBATIM
 	)
 endif()
