@@ -859,39 +859,48 @@ namespace BlinkDash
 				const float valueBefore = costOwner->GetActorValue(costValue);
 				const float modifierBefore = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
 
-				// Applies one delta and reports how far the value moved from valueBefore.
+				// One write, reported as both the value the player sees and the modifier the engine
+				// stored: the two are what tells a real drain from a free heal.
+				struct Probe
+				{
+					float value{ 0.0f };
+					float modifier{ 0.0f };
+				};
+
 				auto spend = [&](float a_delta) {
 					costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, a_delta);
-					return costOwner->GetActorValue(costValue) - valueBefore;
+					return Probe{ costOwner->GetActorValue(costValue),
+						player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue) };
 				};
 
 				auto& sign = CostSignSlot(settings.costResource);
-				auto direction = sign.load(std::memory_order_acquire);
-				if (direction == CostSign::kUnknown) {
-					float moved = 0.0f;
-					if (spend(-amount) < -amount * 0.5f) {
-						direction = CostSign::kNegative;
-						moved = -amount;
+				auto learnedSign = sign.load(std::memory_order_acquire);
+				if (learnedSign == CostSign::kUnknown) {
+					const char* learned = "none";
+					if (spend(-amount).value < valueBefore - amount * 0.5f) {
+						learnedSign = CostSign::kNegative;
+						learned = "negative";
 					} else {
-						// Undo whatever the first attempt stored, then go one cost past it the
-						// other way: on an inverted value that is the direction that drains.
-						if (spend(amount * 2.0f) < -amount * 0.5f) {
-							direction = CostSign::kPositive;
-							moved = -amount;
+						// Undo whatever the first attempt stored and go one cost past it the other way:
+						// on a value whose sign is inverted, that is the direction that drains.
+						const auto probe = spend(amount * 2.0f);
+						if (probe.value < valueBefore - amount * 0.5f) {
+							learnedSign = CostSign::kPositive;
+							learned = "positive";
 						} else {
-							spend(-amount * 2.0f);  // neither direction works: put the modifier back
-							direction = CostSign::kBlocked;
+							// Neither direction takes points. Restore by the offset that was actually
+							// stored (not an assumed one), so the probe leaves the value untouched.
+							spend(modifierBefore - probe.modifier);
+							learnedSign = CostSign::kBlocked;
 						}
 					}
-					sign.store(direction, std::memory_order_release);
-					BDI("blink[{}] cost: {} takes a {} delta on this setup ({:.1f} points), damage modifier {:.1f} -> {:.1f}",
-						a_seq, costName,
-						direction == CostSign::kNegative ? "negative" : direction == CostSign::kPositive ? "positive" : "no",
-						moved, modifierBefore,
+					sign.store(learnedSign, std::memory_order_release);
+					BDI("blink[{}] cost: {} takes a {} delta on this setup, damage modifier {:.1f} -> {:.1f}",
+						a_seq, costName, learned, modifierBefore,
 						player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue));
-				} else if (direction == CostSign::kNegative) {
+				} else if (learnedSign == CostSign::kNegative) {
 					spend(-amount);
-				} else if (direction == CostSign::kPositive) {
+				} else if (learnedSign == CostSign::kPositive) {
 					spend(amount);
 				}
 
@@ -900,7 +909,7 @@ namespace BlinkDash
 				BD("blink[{}] cost: {} {:.1f} -> {:.1f} (cost {:.1f}, damage modifier {:.1f} -> {:.1f})",
 					a_seq, costName, valueBefore, valueAfter, amount, modifierBefore, modifierAfter);
 
-				if (direction == CostSign::kBlocked) {
+				if (learnedSign == CostSign::kBlocked) {
 					BDW("blink[{}] cost: this setup refuses the {} cost in both directions, so the blink stays free; another mod or a stuck effect is holding that actor value",
 						a_seq, costName);
 				} else if (valueAfter > valueBefore - 0.01f) {

@@ -66,11 +66,6 @@ namespace BlinkDash::Perks
 	// The resolved requirement, for logging and the menu readout.
 	[[nodiscard]] std::string DescribeSelection();
 
-	// True when no perk is required. A configured perk that cannot be resolved
-	// (uninstalled plugin, hand-typed key) counts as "not required", so a stale
-	// config never locks the blink out silently.
-	[[nodiscard]] bool RequirementSatisfied();
-
 	// The full gate: no requirement configured, or the player has the perk.
 	// Called from the blink gate checks on the game thread.
 	[[nodiscard]] bool PlayerHasRequired(RE::PlayerCharacter* a_player, const char* a_source);

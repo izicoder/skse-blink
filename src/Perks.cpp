@@ -10,7 +10,6 @@ namespace BlinkDash::Perks
 		constexpr const char* kNoneKey = "None";
 
 		std::vector<Entry>       s_entries;
-		const Entry*             s_selected{ nullptr };
 		std::atomic<std::size_t> s_selectedIndex{ (std::numeric_limits<std::size_t>::max)() };
 
 		const Entry* Selected()
@@ -275,11 +274,6 @@ namespace BlinkDash::Perks
 			return "none";
 		}
 		return std::format("{} [{}] (runtime form 0x{:08X})", selected->Label(), selected->Key(), selected->runtimeFormID);
-	}
-
-	bool RequirementSatisfied()
-	{
-		return Selected() == nullptr;
 	}
 
 	bool PlayerHasRequired(RE::PlayerCharacter* a_player, const char* a_source)
