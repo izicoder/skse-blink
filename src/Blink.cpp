@@ -67,6 +67,25 @@ namespace BlinkDash
 		// Clock of the last successful blink, for the cooldown.
 		std::atomic<float> lastBlinkClock{ -1.0e9f };
 
+		// How the cost has to be pushed into an actor value on this setup. Vanilla wants a
+		// negative damage-modifier delta to spend points, but a value that is rewritten or
+		// inverted by another mod turns that into a free heal, so the direction is probed
+		// once per resource and remembered. See the spend block in ExecuteBlink.
+		enum class CostSign : int
+		{
+			kUnknown = 0,
+			kNegative = -1,  // vanilla: delta -cost takes points away
+			kPositive = 1,   // inverted value: delta +cost takes points away
+			kBlocked = 2     // neither direction moves it: the cost cannot be charged
+		};
+
+		std::atomic<CostSign> costSign[2]{ CostSign::kUnknown, CostSign::kUnknown };  // one per CostResource
+
+		std::atomic<CostSign>& CostSignSlot(CostResource a_resource)
+		{
+			return costSign[a_resource == CostResource::kMagicka ? 1 : 0];
+		}
+
 		std::string Fmt(const RE::NiPoint3& a_point)
 		{
 			return std::format("({:.1f}, {:.1f}, {:.1f})", a_point.x, a_point.y, a_point.z);
@@ -830,25 +849,63 @@ namespace BlinkDash
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
 
 			if (costOwner) {
-				// The damage modifier is a signed offset on the current value, so the
-				// cost has to be passed negative to make it a drain. Stamina and magicka
-				// behave the same here: both regenerate back to their max.
-				const float beforeSpend = costOwner->GetActorValue(costValue);
-				const float drain = -settings.costAmount;
-				BD("blink[{}] cost: calling ModActorValue(kDamage, {}, {:.1f})", a_seq, costName, drain);
-				costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, drain);
+				// The cost is a delta on the damage modifier, which is a signed offset on the
+				// current value. A negative delta is the vanilla drain, but a setup can store it
+				// and still hand points back (an inverted or rewritten actor value), which is a
+				// free heal - worse than no cost at all. So the delta is measured, not assumed:
+				// the direction is probed once per resource, remembered, and the modifier is
+				// logged next to the value so the log shows what the engine actually stored.
+				const float amount = settings.costAmount;
+				const float valueBefore = costOwner->GetActorValue(costValue);
+				const float modifierBefore = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
 
-				// Read the value *and* the damage modifier back: on a heavily modded setup the
-				// two can disagree (a stale/limited value read, or another plugin rewriting the
-				// actor value), and the log is the only place that difference is visible.
-				const float afterSpend = costOwner->GetActorValue(costValue);
-				const float damageModifier = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
-				BD("blink[{}] cost: {} {:.1f} -> {:.1f}, damage modifier now {:.1f}",
-					a_seq, costName, beforeSpend, afterSpend, damageModifier);
+				// Applies one delta and reports how far the value moved from valueBefore.
+				auto spend = [&](float a_delta) {
+					costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, a_delta);
+					return costOwner->GetActorValue(costValue) - valueBefore;
+				};
 
-				if (afterSpend > beforeSpend - 0.01f) {
-					BDW("blink[{}] cost: the {} drain did not stick (value {:.1f} -> {:.1f}, damage modifier {:.1f}); another mod or effect is holding that actor value, so the blink stays free",
-						a_seq, costName, beforeSpend, afterSpend, damageModifier);
+				auto& sign = CostSignSlot(settings.costResource);
+				auto direction = sign.load(std::memory_order_acquire);
+				if (direction == CostSign::kUnknown) {
+					float moved = 0.0f;
+					if (spend(-amount) < -amount * 0.5f) {
+						direction = CostSign::kNegative;
+						moved = -amount;
+					} else {
+						// Undo whatever the first attempt stored, then go one cost past it the
+						// other way: on an inverted value that is the direction that drains.
+						if (spend(amount * 2.0f) < -amount * 0.5f) {
+							direction = CostSign::kPositive;
+							moved = -amount;
+						} else {
+							spend(-amount * 2.0f);  // neither direction works: put the modifier back
+							direction = CostSign::kBlocked;
+						}
+					}
+					sign.store(direction, std::memory_order_release);
+					BDI("blink[{}] cost: {} takes a {} delta on this setup ({:.1f} points), damage modifier {:.1f} -> {:.1f}",
+						a_seq, costName,
+						direction == CostSign::kNegative ? "negative" : direction == CostSign::kPositive ? "positive" : "no",
+						moved, modifierBefore,
+						player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue));
+				} else if (direction == CostSign::kNegative) {
+					spend(-amount);
+				} else if (direction == CostSign::kPositive) {
+					spend(amount);
+				}
+
+				const float valueAfter = costOwner->GetActorValue(costValue);
+				const float modifierAfter = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
+				BD("blink[{}] cost: {} {:.1f} -> {:.1f} (cost {:.1f}, damage modifier {:.1f} -> {:.1f})",
+					a_seq, costName, valueBefore, valueAfter, amount, modifierBefore, modifierAfter);
+
+				if (direction == CostSign::kBlocked) {
+					BDW("blink[{}] cost: this setup refuses the {} cost in both directions, so the blink stays free; another mod or a stuck effect is holding that actor value",
+						a_seq, costName);
+				} else if (valueAfter > valueBefore - 0.01f) {
+					BDW("blink[{}] cost: the {} cost did not land (value {:.1f} -> {:.1f}, damage modifier {:.1f} -> {:.1f})",
+						a_seq, costName, valueBefore, valueAfter, modifierBefore, modifierAfter);
 				}
 			}
 
