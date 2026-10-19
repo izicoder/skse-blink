@@ -4,7 +4,7 @@ What BlinkDash is: an SKSE plugin (no ESP, no Papyrus, no new records) that tele
 collision-aware distance shortening, slope following, body fitting, ground snap and fall-tracker re-basing,
 plus an optional SKSE Menu Framework tab.
 
-Current release: **1.2.0** — settings file format **2**.
+Current release: **1.2.2** — settings file format **2**.
 
 ---
 
