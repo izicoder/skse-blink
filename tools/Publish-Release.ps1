@@ -349,14 +349,25 @@ function Publish-NexusFile
 	# 5. Attach the upload as a new version of the existing file entry, and pull the mod's displayed
 	#    version along with it so the page and the DLL cannot disagree.
 	$versionBody = @{
-		upload_id          = $uploadId
-		name               = "BlinkDash $Version"
-		version            = $Version
-		file_category      = 'main'
-		update_mod_version = $true
+		upload_id                     = $uploadId
+		name                          = "BlinkDash $Version"
+		version                       = $Version
+		file_category                 = 'main'
+		update_mod_version            = $true
+		primary_mod_manager_download  = $true
+		allow_mod_manager_download    = $true
 	} | ConvertTo-Json -Compress
 	$created = (Invoke-ApiRequest -Method Post -Uri "$nexusBase/mod-files/$($targetFile.id)/versions" -Headers $headers -Body $versionBody).data.version
-	Write-Host "  created file version $($created.id) '$($created.name)'"
+	Write-Host "  created file version $($created.id)"
+
+	# The primary flag can only be set when a version is created - there is no endpoint to change it
+	# afterwards. If Nexus kept the old version primary anyway, the mod page and MO2/Vortex would keep
+	# handing out the previous download, so say it loudly instead of reporting a clean success.
+	$after = @((Invoke-ApiRequest -Method Get -Uri "$nexusBase/mod-files/$($targetFile.id)/versions" -Headers $headers).data.versions)
+	$ours = $after | Where-Object { $_.version -eq $Version } | Select-Object -First 1
+	if ($ours -and -not $ours.is_primary) {
+		Write-Warning "Version $Version is published, but Nexus kept another version as the primary mod manager download - flip it on the mod page (Manage files)."
+	}
 
 	# 6. The changelog is what users actually read on the mod page, so it gets the same text as the
 	#    GitHub release body. It is the only cosmetic step, and it runs after the version is live, so a
