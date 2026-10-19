@@ -833,10 +833,23 @@ namespace BlinkDash
 				// The damage modifier is a signed offset on the current value, so the
 				// cost has to be passed negative to make it a drain. Stamina and magicka
 				// behave the same here: both regenerate back to their max.
+				const float beforeSpend = costOwner->GetActorValue(costValue);
 				const float drain = -settings.costAmount;
 				BD("blink[{}] cost: calling ModActorValue(kDamage, {}, {:.1f})", a_seq, costName, drain);
 				costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, drain);
-				BD("blink[{}] cost: {} after={:.1f}", a_seq, costName, costOwner->GetActorValue(costValue));
+
+				// Read the value *and* the damage modifier back: on a heavily modded setup the
+				// two can disagree (a stale/limited value read, or another plugin rewriting the
+				// actor value), and the log is the only place that difference is visible.
+				const float afterSpend = costOwner->GetActorValue(costValue);
+				const float damageModifier = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
+				BD("blink[{}] cost: {} {:.1f} -> {:.1f}, damage modifier now {:.1f}",
+					a_seq, costName, beforeSpend, afterSpend, damageModifier);
+
+				if (afterSpend > beforeSpend - 0.01f) {
+					BDW("blink[{}] cost: the {} drain did not stick (value {:.1f} -> {:.1f}, damage modifier {:.1f}); another mod or effect is holding that actor value, so the blink stays free",
+						a_seq, costName, beforeSpend, afterSpend, damageModifier);
+				}
 			}
 
 			Effects::PlayOnPlayer("blink");

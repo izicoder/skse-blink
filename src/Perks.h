@@ -11,6 +11,8 @@ namespace BlinkDash::Perks
 		std::uint32_t localID{ 0 };  // form id inside that file
 		RE::FormID    runtimeFormID{ 0 };
 		std::string   name;         // the perk's editor/full name, may be empty
+		std::uint32_t rank{ 1 };        // position in the nextPerk chain, 1 based
+		std::uint32_t rankCount{ 1 };   // length of that chain, 1 for single-rank perks
 
 		// Value written to the config. Always stable across load order changes.
 		[[nodiscard]] std::string Key() const
@@ -26,10 +28,15 @@ namespace BlinkDash::Perks
 		};
 		Suffix suffix{ Suffix::kNone };
 
-		// Label without any disambiguation suffix.
+		// Label without any disambiguation suffix. Multi-rank perks are separate records
+		// chained through nextPerk that all share one name, so they are numbered the way
+		// the game shows them ("Armsman 3") instead of falling back to raw form ids.
 		[[nodiscard]] std::string BaseLabel() const
 		{
-			return name.empty() ? Key() : name;
+			if (name.empty()) {
+				return Key();
+			}
+			return rankCount > 1 ? std::format("{} {}", name, rank) : name;
 		}
 
 		// What the dropdown shows: the perk name when there is one, otherwise the key

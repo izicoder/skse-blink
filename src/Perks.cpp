@@ -85,6 +85,56 @@ namespace BlinkDash::Perks
 			return nullptr;
 		}
 
+		Entry* FindByPerk(RE::BGSPerk* a_perk)
+		{
+			for (auto& entry : s_entries) {
+				if (entry.perk == a_perk) {
+					return &entry;
+				}
+			}
+			return nullptr;
+		}
+
+		// Multi-rank perks are separate BGSPerk records chained through nextPerk, all
+		// sharing a single name. Without numbering, every rank collides with its siblings
+		// and the dropdown has to fall back to form ids for them.
+		void AssignRanks()
+		{
+			const auto chainLimit = s_entries.size() + 1;  // guards against a looping chain
+
+			for (auto& entry : s_entries) {
+				entry.rank = 1;
+				entry.rankCount = 1;
+			}
+
+			for (auto& head : s_entries) {
+				// A chain head is a perk that no other perk's nextPerk points at.
+				const bool isHead = std::ranges::none_of(s_entries, [&](const Entry& a_other) {
+					return a_other.perk && a_other.perk->nextPerk == head.perk;
+				});
+				if (!isHead) {
+					continue;
+				}
+
+				std::uint32_t count = 0;
+				for (auto* perk = head.perk; perk && count < chainLimit; perk = perk->nextPerk) {
+					++count;
+				}
+				if (count < 2) {
+					continue;  // single-rank perk: rank 1 is not shown
+				}
+
+				std::uint32_t rank = 1;
+				for (auto* perk = head.perk; perk && rank <= count; perk = perk->nextPerk) {
+					if (auto* entry = FindByPerk(perk)) {
+						entry->rank = rank;
+						entry->rankCount = count;
+					}
+					++rank;
+				}
+			}
+		}
+
 		bool EqualsIgnoreCasePlugin(std::string_view a_lhs, std::string_view a_rhs)
 		{
 			return ToLower(a_lhs) == ToLower(a_rhs);
@@ -148,6 +198,8 @@ namespace BlinkDash::Perks
 			entry.name = DisplayName(perk);
 			s_entries.push_back(std::move(entry));
 		}
+
+		AssignRanks();
 
 		std::ranges::sort(s_entries, [](const Entry& a_lhs, const Entry& a_rhs) {
 			// Named perks first, then the ones without a name (they keep their
