@@ -69,6 +69,13 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
 - Never let an exception cross an engine boundary: catch at entry points and log. All logging goes through
   the `BD*` macros (they swallow their own failures and flush), never raw `spdlog` calls.
 - Prefer editing existing patterns over adding abstractions.
+- **End-user rule: never break compatibility with an existing install.** A user upgrading from any earlier
+  release must keep their settings and their behaviour. That means: read every old key (`staminaCost`,
+  `retriggerDelay`/`cooldown` in seconds, missing `costResource`, …) and convert it on load; keep the
+  `BlinkDash.json` `version` + migration chain in `Config.cpp` growing by one step per format change; never
+  drop options this build does not know. Only break compatibility when a change is genuinely significant
+  (a key that cannot be translated, a removed feature), and then migrate or rename with a logged warning
+  rather than silently resetting the user's file.
 
 ## How a change usually flows
 
@@ -95,6 +102,8 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
   redistributable; `SkyrimSE.exe` itself imports `MSVCP140.dll`/`VCRUNTIME140.dll`, so any machine that runs
   the game has it.
 - Settings live in `BlinkDash.json` **next to the DLL** and are intentionally never overwritten by the build.
+  The file is versioned (`"version"`), every load migrates older formats in place and rewrites the file once,
+  and unknown keys from other builds are preserved. See `Config.cpp` (`kSettingsFormatVersion`, `Migrate`).
 - Target runtime is **1.6.1170** (SKSE 2.2.8) and it is the **only** version the plugin has been tested on.
   The linked library is the all-runtimes (SE + AE + VR) build, so other runtimes may well work, but none has
   actually been run.

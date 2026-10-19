@@ -1,13 +1,15 @@
 {
-    "costAmount": 10.0,
+    "version": 2,
+    "costAmount": 10,
     "costOutsideCombat": false,
     "costResource": "stamina",
-    "cooldown": 1.0,
+    "cooldownMs": 1000,
     "debugOverlay": false,
-    "distance": 200.0,
+    "distance": 200,
     "effectShader": "Skyrim.esm:000E5C",
     "hotkey": 259,
     "logging": true,
-    "maxSlope": 45.0,
-    "retriggerDelay": 0.2
+    "maxSlope": 45,
+    "requiredPerk": "None",
+    "retriggerMs": 200
 }

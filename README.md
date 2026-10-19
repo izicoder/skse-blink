@@ -39,6 +39,11 @@ plus an optional settings tab in [SKSE Menu Framework](https://www.nexusmods.com
 Stored in `SKSE/Plugins/BlinkDash.json` next to the DLL (inside the mod folder under MO2). Written with
 these defaults on first run and never overwritten by builds.
 
+Every number is an integer (units, degrees, points, milliseconds), so nothing in the file is a float.
+The file carries a `version` and is migrated in place on launch: a file from an older release
+(`staminaCost`, `retriggerDelay`/`cooldown` in seconds) is converted and rewritten once, and options this
+build does not recognise are preserved rather than dropped.
+
 | Setting | Default | Range |
 |---|---|---|
 | Hotkey | Mouse 4 (`0x103`) | keyboard key, mouse button or gamepad button |

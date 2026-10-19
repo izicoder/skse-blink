@@ -230,8 +230,8 @@ namespace BlinkDash::Input
 					if (held <= 0.0f) {
 						pressTicks.store(nowTicks, std::memory_order_release);
 						pressCount.fetch_add(1, std::memory_order_relaxed);
-						BDI("input: hotkey DOWN ({}), release within {:.0f}ms to blink",
-							Detail::DescribeCode(code), settings.retriggerDelay * 1000.0f);
+						BDI("input: hotkey DOWN ({}), release within {}ms to blink",
+							Detail::DescribeCode(code), settings.retriggerMs);
 					} else if (held <= kRepeatLogWindow) {
 						BD("input: hotkey held repeat at {:.0f}ms (no blink while held)", held * 1000.0f);
 					}
@@ -245,15 +245,18 @@ namespace BlinkDash::Input
 						continue;
 					}
 
-					if (heldTime <= settings.retriggerDelay) {
+					// The tap window is configured in whole milliseconds, so the measured hold is
+					// rounded to the same unit before it is compared.
+					const int heldMs = static_cast<int>(std::lround(heldTime * 1000.0f));
+					if (heldMs <= settings.retriggerMs) {
 						tapCount.fetch_add(1, std::memory_order_relaxed);
-						BDI("input: hotkey TAP (held {:.0f}ms <= {:.0f}ms window) -> RequestBlink",
-							heldTime * 1000.0f, settings.retriggerDelay * 1000.0f);
+						BDI("input: hotkey TAP (held {}ms <= {}ms window) -> RequestBlink",
+							heldMs, settings.retriggerMs);
 						RequestBlink("hotkey-tap");
 					} else {
 						longHoldCount.fetch_add(1, std::memory_order_relaxed);
-						BDI("input: hotkey held {:.0f}ms > {:.0f}ms window, NOT blinking (sprint/jump style hold)",
-							heldTime * 1000.0f, settings.retriggerDelay * 1000.0f);
+						BDI("input: hotkey held {}ms > {}ms window, NOT blinking (sprint/jump style hold)",
+							heldMs, settings.retriggerMs);
 					}
 				}
 			}

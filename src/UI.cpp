@@ -19,15 +19,15 @@ namespace BlinkDash::UI
 		// Menu ranges. Distance matches Blink.cpp's kMaxDistanceCap and the clamp in
 		// Config::Validate, so the slider can never ask for more than the blink will
 		// actually travel.
-		constexpr float kMinDistance = 100.0f;
-		constexpr float kMaxDistance = 1000.0f;
-		constexpr float kMaxCost = 100.0f;
-		constexpr float kMinTapWindowMs = 20.0f;
-		constexpr float kMaxTapWindowMs = 1000.0f;
-		constexpr float kMinCooldownMs = 0.0f;
-		constexpr float kMaxCooldownMs = 2000.0f;
-		constexpr float kMinSlopeDeg = 20.0f;
-		constexpr float kMaxSlopeDeg = 80.0f;
+		constexpr int kMinDistance = 100;
+		constexpr int kMaxDistance = 1000;
+		constexpr int kMaxCost = 100;
+		constexpr int kMinTapWindowMs = 20;
+		constexpr int kMaxTapWindowMs = 1000;
+		constexpr int kMinCooldownMs = 0;
+		constexpr int kMaxCooldownMs = 2000;
+		constexpr int kMinSlopeDeg = 20;
+		constexpr int kMaxSlopeDeg = 80;
 
 		// Sliders fire every frame while dragging, so writes are debounced; anything
 		// discrete (checkbox, dropdown, rebind, reset) saves immediately, and a
@@ -575,7 +575,7 @@ namespace BlinkDash::UI
 				snapshot.direction.x, snapshot.direction.y,
 				snapshot.grounded ? (snapshot.slopeFollowed ? "on ground, followed the slope" : "on ground") : "airborne"));
 			stats.emplace_back(kBodyText, std::format("climbed {:+.0f} units", snapshot.climb));
-			stats.emplace_back(kBodyText, std::format("slope limit {:.0f}deg   surface {:.1f}deg",
+			stats.emplace_back(kBodyText, std::format("slope limit {}deg   surface {:.1f}deg",
 				Config::Get().maxSlope, snapshot.groundSlopeDegrees));
 			stats.emplace_back(kBodyText, std::format("walked over {} probe{}", snapshot.walked, snapshot.walked == 1 ? "" : "s"));
 
@@ -685,20 +685,20 @@ namespace BlinkDash::UI
 
 			ImGui::SeparatorText("Blink");
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Blink distance, max (units)", &settings.distance, kMinDistance, kMaxDistance, "%.0f")) {
-				BD("ui: distance -> {:.0f}", settings.distance);
+			if (ImGui::SliderInt("Blink distance, max (units)", &settings.distance, kMinDistance, kMaxDistance)) {
+				BD("ui: distance -> {}", settings.distance);
 				MarkChanged("distance");
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Max climbable slope (deg)", &settings.maxSlope, kMinSlopeDeg, kMaxSlopeDeg, "%.0f")) {
-				BD("ui: maxSlope -> {:.0f}", settings.maxSlope);
+			if (ImGui::SliderInt("Max climbable slope (deg)", &settings.maxSlope, kMinSlopeDeg, kMaxSlopeDeg)) {
+				BD("ui: maxSlope -> {}", settings.maxSlope);
 				MarkChanged("maxSlope");
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Cost per blink", &settings.costAmount, 0.0f, kMaxCost, "%.0f")) {
-				BD("ui: costAmount -> {:.0f}", settings.costAmount);
+			if (ImGui::SliderInt("Cost per blink", &settings.costAmount, 0, kMaxCost)) {
+				BD("ui: costAmount -> {}", settings.costAmount);
 				MarkChanged("costAmount");
 			}
 
@@ -712,19 +712,15 @@ namespace BlinkDash::UI
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			float tapWindowMs = settings.retriggerDelay * 1000.0f;
-			if (ImGui::SliderFloat("Tap window, press+release (ms)", &tapWindowMs, kMinTapWindowMs, kMaxTapWindowMs, "%.0f")) {
-				settings.retriggerDelay = tapWindowMs / 1000.0f;
-				BD("ui: retriggerDelay -> {:.0f}ms ({:.3f}s)", tapWindowMs, settings.retriggerDelay);
-				MarkChanged("retriggerDelay");
+			if (ImGui::SliderInt("Tap window, press+release (ms)", &settings.retriggerMs, kMinTapWindowMs, kMaxTapWindowMs)) {
+				BD("ui: retriggerMs -> {}", settings.retriggerMs);
+				MarkChanged("retriggerMs");
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			float cooldownMs = settings.cooldown * 1000.0f;
-			if (ImGui::SliderFloat("Cooldown between blinks (ms)", &cooldownMs, kMinCooldownMs, kMaxCooldownMs, "%.0f")) {
-				settings.cooldown = cooldownMs / 1000.0f;
-				BD("ui: cooldown -> {:.0f}ms ({:.3f}s)", cooldownMs, settings.cooldown);
-				MarkChanged("cooldown");
+			if (ImGui::SliderInt("Cooldown between blinks (ms)", &settings.cooldownMs, kMinCooldownMs, kMaxCooldownMs)) {
+				BD("ui: cooldownMs -> {}", settings.cooldownMs);
+				MarkChanged("cooldownMs");
 			}
 
 			ImGui::SeparatorText("Effect");

@@ -15,13 +15,13 @@ namespace BlinkDash
 	struct Settings
 	{
 		std::uint32_t hotkey{ 0x103 };        // 0x100|N = mouse button index N (0 = LMB, 1 = RMB, 2 = MMB, 3 = MB4); otherwise a DIK scancode
-		float         distance{ 200.0f };     // blink length in game units
-		float         costAmount{ 10.0f };    // drained per blink from costResource, 0 = free
+		int           distance{ 200 };        // blink length in game units
+		int           costAmount{ 10 };       // drained per blink from costResource, 0 = free
 		CostResource  costResource{ CostResource::kStamina };  // stamina or magicka
 		bool          costOutsideCombat{ false };  // charge it out of combat too; off = the cost exists in combat only
-		float         retriggerDelay{ 0.20f };  // seconds: press AND release must be shorter than this, otherwise nothing happens
-		float         cooldown{ 1.0f };       // seconds between blinks; 0 = off, every tap may blink
-		float         maxSlope{ 45.0f };      // degrees: ground steeper than this counts as a wall, not as a slope to blink along
+		int           retriggerMs{ 200 };     // tap window in milliseconds: press AND release inside this, otherwise nothing happens
+		int           cooldownMs{ 1000 };     // milliseconds between blinks; 0 = off, every tap may blink
+		int           maxSlope{ 45 };         // degrees: ground steeper than this counts as a wall, not as a slope to blink along
 		std::string   effectShader{ "Skyrim.esm:000E5C" };  // effect shader to play on blink: "plugin:FORMID" from BlinkDash.ShaderNames.json, or "None"
 		std::string   requiredPerk{ "None" };  // blink only works while the player has this perk: "plugin:FORMID", or "None" = always on
 		bool          debugOverlay{ false };  // draw the last blink's rays and landing spot in game

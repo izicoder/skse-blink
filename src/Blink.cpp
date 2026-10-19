@@ -19,6 +19,9 @@ namespace BlinkDash
 	{
 		// Internal tuning that is not exposed in the menu.
 		constexpr float kMaxDistanceCap = 1000.0f;
+		// Slope bounds for the clamp below: the same numbers Config::Validate and the menu use.
+		constexpr int   kMinSlopeDegrees = 20;
+		constexpr int   kMaxSlopeDegrees = 80;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 10.0f;        // shortest blink worth doing
 		// No blink at all when the nearest obstacle is inside this: it is what stops a
@@ -597,12 +600,13 @@ namespace BlinkDash
 			const float now = Now();
 			BD("blink[{}] clock={:.3f}s", a_seq, now);
 
-			// Cooldown: off unless configured, and only successful blinks count.
-			if (settings.cooldown > 0.0f) {
-				const float since = now - lastBlinkClock.load(std::memory_order_acquire);
-				if (since < settings.cooldown) {
-					BDI("blink[{}] REJECTED: cooldown, {:.0f}ms since the last blink of {:.0f}ms",
-						a_seq, since * 1000.0f, settings.cooldown * 1000.0f);
+			// Cooldown: off unless configured, and only successful blinks count. Both sides of
+			// the comparison are whole milliseconds, so a 1000ms cooldown means exactly that.
+			if (settings.cooldownMs > 0) {
+				const int sinceMs = static_cast<int>(std::lround((now - lastBlinkClock.load(std::memory_order_acquire)) * 1000.0f));
+				if (sinceMs < settings.cooldownMs) {
+					BDI("blink[{}] REJECTED: cooldown, {}ms since the last blink of {}ms",
+						a_seq, sinceMs, settings.cooldownMs);
 					return false;
 				}
 			}
@@ -615,24 +619,25 @@ namespace BlinkDash
 			const char* costName = settings.costResource == CostResource::kMagicka ? "magicka" : "stamina";
 
 			RE::ActorValueOwner* costOwner = nullptr;
+			const int            costAmount = settings.costAmount;
 
 			const bool inCombat = player->IsInCombat();
-			BD("blink[{}] in combat={} cost resource={} amount={:.0f} outsideCombat={}",
-				a_seq, inCombat, costName, settings.costAmount, settings.costOutsideCombat);
+			BD("blink[{}] in combat={} cost resource={} amount={} outsideCombat={}",
+				a_seq, inCombat, costName, costAmount, settings.costOutsideCombat);
 
-			if (settings.costAmount <= 0.0f) {
+			if (costAmount <= 0) {
 				BD("blink[{}] cost: no cost configured, skipping the {} check", a_seq, costName);
 			} else if (!inCombat && !settings.costOutsideCombat) {
 				// Log the value as well: a report of "the bar went down out of combat" can
 				// then be checked against what the blink actually saw at that moment.
-				float current = -1.0f;
+				int current = -1;
 				if (auto* owner = player->AsActorValueOwner()) {
 					const auto vtable = *reinterpret_cast<const std::uintptr_t*>(owner);
 					if (vtable >= kMinPlausibleVtable) {
-						current = owner->GetActorValue(costValue);
+						current = static_cast<int>(std::lround(owner->GetActorValue(costValue)));
 					}
 				}
-				BD("blink[{}] cost: out of combat, no {} charged ({} {:.1f}, untouched)", a_seq, costName, costName, current);
+				BD("blink[{}] cost: out of combat, no {} charged ({} {}, untouched)", a_seq, costName, costName, current);
 			} else {
 				// NOTE: never call player->GetActorValue() / player->DamageActorValue()
 				// directly. Those use the ActorValueOwner base offset baked into the
@@ -650,9 +655,9 @@ namespace BlinkDash
 					BDE("blink[{}] cost: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
 						a_seq, vtable);
 				} else {
-					const float current = owner->GetActorValue(costValue);
-					BD("blink[{}] cost: current {}={:.1f} cost={:.1f}", a_seq, costName, current, settings.costAmount);
-					if (current < settings.costAmount) {
+					const int current = static_cast<int>(std::lround(owner->GetActorValue(costValue)));
+					BD("blink[{}] cost: current {}={} cost={}", a_seq, costName, current, costAmount);
+					if (current < costAmount) {
 						BDI("blink[{}] REJECTED: not enough {}", a_seq, costName);
 						return false;
 					}
@@ -670,13 +675,17 @@ namespace BlinkDash
 			const RE::NiPoint3 feet = player->GetPosition();
 			BD("blink[{}] feet position = {}", a_seq, Fmt(feet));
 
-			const float distance = std::clamp(settings.distance, 0.0f, kMaxDistanceCap);
-			if (distance < kMinTravel) {
-				BD("blink[{}] REJECTED: configured distance {:.0f} is below the minimum travel {:.0f}",
-					a_seq, distance, kMinTravel);
+			// The configured distance is an integer; the geometry below is float, so it is
+			// clamped as an integer first and converted once.
+			const int distanceCap = static_cast<int>(kMaxDistanceCap);
+			const int clampedDistance = std::clamp(settings.distance, 0, distanceCap);
+			const float distance = static_cast<float>(clampedDistance);
+			if (clampedDistance < static_cast<int>(kMinTravel)) {
+				BD("blink[{}] REJECTED: configured distance {} is below the minimum travel {}",
+					a_seq, clampedDistance, static_cast<int>(kMinTravel));
 				return false;
 			}
-			BD("blink[{}] distance request={:.1f} clamped={:.1f} (cap {:.1f})", a_seq, settings.distance, distance, kMaxDistanceCap);
+			BD("blink[{}] distance request={} clamped={} (cap {})", a_seq, settings.distance, clampedDistance, distanceCap);
 
 			std::uint32_t rawFilter = 0;
 			{
@@ -686,7 +695,8 @@ namespace BlinkDash
 				BD("blink[{}] raw collision filter = 0x{:08X}", a_seq, rawFilter);
 			}
 			const auto rayFilter = BuildRayFilter(rawFilter);
-			const float maxSlope = std::clamp(settings.maxSlope, 20.0f, 80.0f);
+			const int maxSlopeDegrees = std::clamp(settings.maxSlope, kMinSlopeDegrees, kMaxSlopeDegrees);
+			const float maxSlope = static_cast<float>(maxSlopeDegrees);
 			const float slopeTan = std::tan(maxSlope * kRadiansPerDegree);
 			const float fallDamageHeight = FallDamageHeight();
 
@@ -694,7 +704,7 @@ namespace BlinkDash
 			// The distance is a maximum: whatever the rays find shortens the travel, it
 			// never turns a blink into a no-op. Only surfaces too steep to walk on count
 			// as obstacles, so a hill keeps the whole distance while a cliff blocks it.
-			BD("blink[{}] --- obstacle rays ({} heights, slope limit {:.0f}deg) ---", a_seq, std::size(kPathHeights), maxSlope);
+			BD("blink[{}] --- obstacle rays ({} heights, slope limit {}deg) ---", a_seq, std::size(kPathHeights), maxSlopeDegrees);
 			const float nearest = PathFraction(feet, direction.dir, distance, rayFilter, maxSlope, snapshot);
 			const bool blocked = nearest <= 1.0f;
 
@@ -855,7 +865,9 @@ namespace BlinkDash
 				// free heal - worse than no cost at all. So the delta is measured, not assumed:
 				// the direction is probed once per resource, remembered, and the modifier is
 				// logged next to the value so the log shows what the engine actually stored.
-				const float amount = settings.costAmount;
+				// The configured cost is an integer; the actor value the engine hands back is not,
+				// so only this one conversion is left.
+				const float amount = static_cast<float>(costAmount);
 				const float valueBefore = costOwner->GetActorValue(costValue);
 				const float modifierBefore = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
 
