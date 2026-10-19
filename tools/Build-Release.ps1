@@ -6,8 +6,9 @@
 .DESCRIPTION
 	One script for a whole release: it configures and builds the vs2022 preset with the
 	requested version stamped into the binary, stages the mod the way a mod manager expects to
-	install it, and writes packages/BlinkDash-<Version>.zip. Uploading that zip is a manual step
-	on the mod page - nothing here talks to Nexus Mods.
+	install it, and writes packages/BlinkDash-<Version>.zip. Publishing that zip is a separate,
+	explicit step - `tools\Publish-Release.ps1 -Version <Version> -Nexus -GitHub` - so a build
+	can never upload anything by accident.
 
 	The archive is laid out as:
 
@@ -215,5 +216,5 @@ Remove-Item $stage -Recurse -Force
 
 $zip = Get-Item $Output
 Write-Host ("Packaged {0} ({1:N0} bytes)" -f $zip.FullName, $zip.Length)
-Write-Host 'Upload it by hand on the mod page (Files tab -> Upload a new file).'
+Write-Host 'Publish it with: tools\Publish-Release.ps1 -Version <Version> -Nexus -GitHub (-DryRun to preview).'
 Write-Output $zip.FullName

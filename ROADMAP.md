@@ -76,8 +76,9 @@ Current release: **1.2.0** — settings file format **2**.
 - `CHANGELOG.md` mirroring the git log per release (the Nexus file description can link to it).
 - Nexus: keep the file version in sync with `BLINKDASH_VERSION`; note the settings migration in every release
   that changes the format.
-- Release checklist: `tools\Build-Release.ps1 -Version X.Y.Z` → upload `packages\BlinkDash-X.Y.Z.zip` →
-  verify in game from a **fresh** config and from a **1.0.0-era** config.
+- Release checklist: `tools\Build-Release.ps1 -Version X.Y.Z` → `tools\Publish-Release.ps1 -Version X.Y.Z
+  -Nexus -GitHub` (publishes only on command; `-DryRun` previews) → verify in game from a **fresh**
+  config and from a **1.0.0-era** config.
 
 ---
 
