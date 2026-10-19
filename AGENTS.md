@@ -118,3 +118,7 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
 - Commits are single-line, imperative and descriptive of the outcome (see `git log`).
 - When a change is done and it builds, commit it yourself — do not ask whether to commit, and do not ask for
   message approval.
+- **Never push, tag or publish without the user's confirmation for that specific action.** `git push`
+  (branches and tags), `gh release create` and any Nexus upload (`tools/Publish-Release.ps1` without
+  `-DryRun`) require an explicit go-ahead from the user each time. Committing locally is fine and
+  expected; pushing, creating a release or uploading a file is not. `-DryRun` is always allowed.
