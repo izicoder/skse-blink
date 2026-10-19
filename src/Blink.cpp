@@ -51,6 +51,15 @@ namespace BlinkDash
 		constexpr float kPathHeights[] = { 8.0f, 32.0f, 56.0f, 80.0f, 104.0f, 128.0f };
 		constexpr const char* kPathLabels[] = { "ankle", "knee", "waist", "chest", "shoulder", "head" };
 
+		// A stair is a sawtooth: each tread is walkable but the riser between two of them is
+		// ~90deg, so every slope limit still reads it as a wall. A steep contact is therefore
+		// only treated as a wall when there is no room above it: the air just above the contact
+		// is probed forward, and when it stays clear for a step's depth the surface is something
+		// to walk up (a riser, a kerb, a low fence) rather than something to stop at.
+		constexpr float kStepLift = 48.0f;        // how far above the contact the air is tested
+		constexpr float kStepClearDepth = 32.0f;  // clear distance that makes it a step
+		constexpr float kStepProbeLength = 64.0f;  // longest forward probe
+
 		// Destination body fit: the obstacle rays test a line, so a corner can still
 		// clip a shoulder where that line is clear. Once a landing is picked, the body
 		// volume there is probed in a circle and the travel is stepped back until it fits.
@@ -378,6 +387,26 @@ namespace BlinkDash
 			segment.label = a_label;
 		}
 
+		// True when a steep contact is only a step: the air kStepLift above the contact point has
+		// to stay clear for kStepClearDepth along the blink direction. A wall has no such air (the
+		// probe hits it immediately), a riser does (the next treads are below the probe).
+		bool IsStepOver(const RayResult& a_ray, const RE::NiPoint3& a_direction, float a_distance,
+			std::uint32_t a_filter, float a_maxSlope)
+		{
+			const RE::NiPoint3 from = a_ray.point + RE::NiPoint3{ 0.0f, 0.0f, kStepLift };
+			const float remaining = (std::max)(a_distance * (1.0f - a_ray.fraction), kStepClearDepth);
+			const float length = (std::min)(remaining, kStepProbeLength);
+			const auto  probe = Raycast("step", from, from + a_direction * length, a_filter);
+
+			if (!probe.hit) {
+				return true;  // nothing above the contact at all
+			}
+			if (Walkable(probe.slopeDegrees, a_maxSlope)) {
+				return true;  // the air above ends on a walkable surface, i.e. the next tread
+			}
+			return probe.fraction * length >= kStepClearDepth;
+		}
+
 		// The obstacle rays, one per body height, and the nearest fraction that is
 		// actually solid. A hit is classified by the surface angle: ground shallow
 		// enough to walk on is not an obstacle, the blink goes over it and the landing
@@ -402,6 +431,11 @@ namespace BlinkDash
 					continue;
 				}
 				if (ray.hit) {
+					if (IsStepOver(ray, a_direction, a_distance, a_filter, a_maxSlope)) {
+						BD("  path[{}]: hit a {:.1f}deg surface at {:.1f} units, but the air above it is clear: step, not a wall",
+							kPathLabels[i], ray.slopeDegrees, a_distance * ray.fraction);
+						continue;
+					}
 					nearest = (std::min)(nearest, ray.fraction);
 				}
 			}
