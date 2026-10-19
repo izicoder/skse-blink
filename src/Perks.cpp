@@ -15,9 +15,22 @@ namespace BlinkDash::Perks
 
 		const Entry* Selected()
 		{
+			// The config string is the truth and the index is derived state. If the two ever
+			// disagree (a settings reset that replaced every field, a hand-edited file), resolve
+			// again instead of gating the blink on a perk that is no longer configured.
+			const auto& want = Config::Get().requiredPerk;
+			const bool none = want.empty() || want == kNoneKey;
+
 			const auto index = s_selectedIndex.load(std::memory_order_acquire);
-			if (index >= s_entries.size()) {
+			if (none || index >= s_entries.size()) {
 				return nullptr;
+			}
+			if (s_entries[index].Key() != want) {
+				BDW("perks: selection was stale ('{}' selected, '{}' configured), re-resolving",
+					s_entries[index].Key(), want);
+				RefreshSelection();
+				const auto refreshed = s_selectedIndex.load(std::memory_order_acquire);
+				return refreshed >= s_entries.size() ? nullptr : &s_entries[refreshed];
 			}
 			return &s_entries[index];
 		}

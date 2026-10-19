@@ -277,6 +277,10 @@ namespace BlinkDash::UI
 						BD("ui: Reset defaults cancelled the active hotkey capture");
 					}
 					Effects::RefreshSelection();
+					// Same reason as the shader: the gate reads the resolved perk, not the config
+					// string, and a reset that leaves the old perk resolved would keep rejecting
+					// every blink even though the menu now says "None".
+					Perks::RefreshSelection();
 					Log::SetEnabled(a_settings.logging);
 					SaveNow("reset defaults");
 

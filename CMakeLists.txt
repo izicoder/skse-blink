@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 # The release version, baked into the binary (Version.h) and the SKSE plugin record. It is a
 # cache variable so tools/Build-Release.ps1 can stamp the DLL with the version it names the
 # archive after (-DBLINKDASH_VERSION=1.0.1) without anyone editing this file per release.
-set(BLINKDASH_VERSION "1.1.2" CACHE STRING "Version baked into the plugin binary")
+set(BLINKDASH_VERSION "1.1.3" CACHE STRING "Version baked into the plugin binary")
 
 project(BlinkDash VERSION ${BLINKDASH_VERSION} LANGUAGES CXX)
 
