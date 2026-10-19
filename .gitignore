@@ -21,3 +21,6 @@ compile_commands.json
 *.user
 *.pdb
 *.log
+
+# Agent task logs written by the dev tooling
+.pi/
