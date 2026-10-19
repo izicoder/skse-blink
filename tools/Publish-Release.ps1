@@ -10,10 +10,11 @@
 	only when -Nexus or -GitHub is named on the command line.
 
 	Nexus goes through the public v3 Upload API - the same multipart-upload + finalise + create-version
-	flow as Nexus-Mods/upload-action. The API cannot create a file entry, only add versions to one
-	that already exists, so -FileId must be a real entry on the mod page (the default is BlinkDash's
-	MAIN file). After the version is created the mod's displayed version is synced to it and the notes
-	are posted as a changelog entry.
+	flow as Nexus-Mods/upload-action. Nexus has two id spaces: v1 (and the mod page URL) is game-scoped,
+	v3 addresses mods and files by its own global ids, so the mod and file ids are resolved from the
+	game-scoped -ModId on every run instead of being hardcoded. The file entry has to exist already; the
+	API can only add versions to one. After the version is created the mod's displayed version is synced
+	to it and the notes are posted as a changelog entry.
 
 	GitHub goes through the gh CLI (authenticated on this machine) and attaches the same archive. The
 	tag is v<Version> and the release body is the notes.
@@ -42,11 +43,14 @@
 .PARAMETER Archive
 	Archive to publish. Defaults to packages\BlinkDash-<Version>.zip next to the repo root.
 
-.PARAMETER FileId
-	Nexus file entry to add a version to. It has to exist already; the API cannot create one.
+.PARAMETER V3FileId
+	Nexus v3 file id to add a version to, when the mod has more than one active file entry. Normally
+	left unset: the single active file is found automatically. This is the v3 id, not the file_id the
+	v1 API and the mod page use for a file version.
 
 .PARAMETER ModId
-	Nexus mod id, used for the changelog entry and for the read-only sanity check.
+	Nexus mod id as it appears in the mod page URL (the game-scoped id), used for the lookup and for
+	the changelog entry.
 
 .PARAMETER ApiKey
 	Nexus API key. Defaults to $env:NEXUS_API_KEY, then to %USERPROFILE%\.pi\nexus-api-key.txt (kept
@@ -79,8 +83,8 @@ param(
 	[switch]$GitHub,
 	[string]$Notes,
 	[string]$Archive,
-	[int]$FileId = 822769,
 	[int]$ModId = 195907,
+	[string]$V3FileId = '',
 	[string]$ApiKey,
 	[switch]$DryRun,
 	[switch]$Force
@@ -99,7 +103,6 @@ $archiveItem = Get-Item $Archive
 
 $tag = "v$Version"
 $nexusBase = 'https://api.nexusmods.com/v3'
-$nexusV1 = 'https://api.nexusmods.com/v1'
 $game = 'skyrimspecialedition'
 
 # ---------------------------------------------------------------------------
@@ -227,10 +230,12 @@ function Send-UploadPart
 	param([string]$Url, [byte[]]$Bytes, [int]$Number, [int]$Total)
 
 	Write-Host ("  part {0}/{1} ({2:N0} bytes)" -f $Number, $Total, $Bytes.Length)
+	# -SkipHttpErrorCheck keeps the body of an error response instead of throwing a WebException that
+	# hides it. Invoke-WebRequest has no -StatusCodeVariable, unlike Invoke-RestMethod, so the status
+	# is read off the response object.
 	$response = Invoke-WebRequest -Method Put -Uri $Url -Body $Bytes `
-		-ContentType 'application/octet-stream' -SkipHttpErrorCheck `
-		-StatusCodeVariable 'statusCode' -TimeoutSec 600
-	if ($statusCode -ge 300) { throw "Part $Number upload failed with HTTP $statusCode`: $($response.Content)" }
+		-ContentType 'application/octet-stream' -SkipHttpErrorCheck -TimeoutSec 600
+	if ($response.StatusCode -ge 300) { throw "Part $Number upload failed with HTTP $($response.StatusCode)`": $($response.Content)" }
 
 	# The ETag comes back quoted; S3 wants it unquoted in the completion XML.
 	$etag = $response.Headers['ETag']
@@ -245,7 +250,7 @@ function Publish-NexusFile
 	param(
 		[string]$Key,
 		[string]$Path,
-		[int]$FileId,
+		[string]$V3FileId,
 		[int]$ModId,
 		[string]$Version,
 		[string]$Notes,
@@ -255,26 +260,41 @@ function Publish-NexusFile
 
 	$headers = @{ apikey = $Key; 'User-Agent' = 'BlinkDash/release' }
 
-	# The ids are defaults in this script, so confirm with read-only calls that they still point at
-	# this mod's file before anything is created. Uploading into the wrong entry is not undoable.
-	$mod = Invoke-ApiRequest -Method Get -Uri "$nexusV1/games/$game/mods/$ModId.json" -Headers $headers
-	$files = @((Invoke-ApiRequest -Method Get -Uri "$nexusV1/games/$game/mods/$ModId/files.json" -Headers $headers).files)
-	$target = $files | Where-Object { $_.file_id -eq $FileId } | Select-Object -First 1
-	if (-not $target) { throw "File $FileId is not a file of mod $ModId ('$($mod.name)')." }
-	Write-Host "Nexus: mod $ModId '$($mod.name)' v$($mod.version); target file $FileId '$($target.name)' v$($target.version) [$($target.category_name)]"
+	# v1 and v3 do not share ids: a v1 file_id used in a /v3/mod-files/... path addresses a different
+	# file entirely (usually someone else's, which answers 403 "no permission to upload"). So resolve
+	# the game-scoped mod id to its v3 mod id, then to the v3 id of the file entry.
+	$mod = (Invoke-ApiRequest -Method Get -Uri "$nexusBase/games/$game/mods/$ModId" -Headers $headers).data
+	Write-Host "Nexus: mod $ModId '$($mod.name)' (v3 id $($mod.id))"
+
+	$files = @((Invoke-ApiRequest -Method Get -Uri "$nexusBase/mods/$($mod.id)/files" -Headers $headers).data.mod_files)
+	$active = @($files | Where-Object { $_.is_active })
+	if ($V3FileId) {
+		$targetFile = $active | Where-Object { $_.id -eq $V3FileId } | Select-Object -First 1
+		if (-not $targetFile) { throw "v3 file $V3FileId is not an active file of mod $ModId." }
+	}
+	elseif ($active.Count -eq 1) { $targetFile = $active[0] }
+	else {
+		$names = ($active | ForEach-Object { "$($_.id) '$($_.name)'" }) -join ', '
+		throw "Mod $ModId has $($active.Count) active files ($names); pass -V3FileId to choose one."
+	}
+
+	$versions = @((Invoke-ApiRequest -Method Get -Uri "$nexusBase/mod-files/$($targetFile.id)/versions" -Headers $headers).data.versions)
+	$primary = $versions | Where-Object { $_.is_primary } | Select-Object -First 1
+	$current = if ($primary) { $primary.version } else { '(none)' }
+	Write-Host "  file $($targetFile.id) '$($targetFile.name)' - $($versions.Count) version(s), primary $current"
 
 	# Nexus happily accepts a second version carrying the same number, and the API has no delete for
 	# one. A half-failed publish is the only reason to want that, so it has to be asked for.
-	if ($target.version -eq $Version -and -not $Force) {
-		throw "File $FileId already reports version $($target.version) on Nexus - publishing $Version again would create a duplicate. Pass -Force only if that is what you want."
-	}
-	if ($target.version -eq $Version) {
-		Write-Warning "File $FileId already reports version $($target.version); -Force given, so this adds a second version with the same number."
+	if ($versions | Where-Object { $_.version -eq $Version }) {
+		if (-not $Force) {
+			throw "File $($targetFile.id) already has a $Version version on Nexus - publishing it again would create a duplicate. Pass -Force only if that is what you want."
+		}
+		Write-Warning "File $($targetFile.id) already has a $Version version; -Force given, so this adds a second one with the same number."
 	}
 
 	if ($DryRun) {
-		Write-Host ("Dry run: would upload {0} ({1:N0} bytes) as version {2} of file {3}, sync the mod version and post the changelog." -f `
-			(Split-Path $Path -Leaf), (Get-Item $Path).Length, $Version, $FileId)
+		Write-Host ("Dry run: would upload {0} ({1:N0} bytes) as version {2} of v3 file {3}, sync the mod version and post the changelog." -f `
+			(Split-Path $Path -Leaf), (Get-Item $Path).Length, $Version, $targetFile.id)
 		return
 	}
 
@@ -335,7 +355,7 @@ function Publish-NexusFile
 		file_category      = 'main'
 		update_mod_version = $true
 	} | ConvertTo-Json -Compress
-	$created = (Invoke-ApiRequest -Method Post -Uri "$nexusBase/mod-files/$FileId/versions" -Headers $headers -Body $versionBody).data.version
+	$created = (Invoke-ApiRequest -Method Post -Uri "$nexusBase/mod-files/$($targetFile.id)/versions" -Headers $headers -Body $versionBody).data.version
 	Write-Host "  created file version $($created.id) '$($created.name)'"
 
 	# 6. The changelog is what users actually read on the mod page, so it gets the same text as the
@@ -344,7 +364,7 @@ function Publish-NexusFile
 	if ($Notes) {
 		$changelogBody = @{ version = $Version; changelog = $Notes } | ConvertTo-Json -Compress
 		try {
-			Invoke-ApiRequest -Method Post -Uri "$nexusBase/mods/$ModId/changelogs" -Headers $headers -Body $changelogBody | Out-Null
+			Invoke-ApiRequest -Method Post -Uri "$nexusBase/mods/$($mod.id)/changelogs" -Headers $headers -Body $changelogBody | Out-Null
 			Write-Host '  changelog entry added'
 		}
 		catch {
@@ -404,7 +424,7 @@ $notes = Get-ReleaseNotes -Override $Notes -Version $Version
 
 if ($Nexus) {
 	$key = Get-NexusApiKey -Explicit $ApiKey
-	Publish-NexusFile -Key $key -Path $archiveItem.FullName -FileId $FileId -ModId $ModId `
+	Publish-NexusFile -Key $key -Path $archiveItem.FullName -V3FileId $V3FileId -ModId $ModId `
 		-Version $Version -Notes $notes -DryRun:$DryRun -Force:$Force
 }
 
