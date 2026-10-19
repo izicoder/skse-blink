@@ -61,6 +61,10 @@ enabled, and reading `…\Documents\My Games\Skyrim Special Edition\SKSE\BlinkDa
 
 ## Conventions
 
+- **A question is a question: answer it, change nothing.** When the user asks *why* something is the way it
+  is, what a value means, or how something works, reply with the explanation only. Do not edit files, rebuild,
+  bump versions, package, commit or "fix" anything as a side effect of a question. Act only on an explicit
+  instruction to change something.
 - **Tabs** for indentation, Allman braces, `namespace BlinkDash` (or a nested namespace).
 - The code is deliberately **heavily commented**: explain *why* a ray, magic number or engine call exists,
   not what the next line does. Keep that style.

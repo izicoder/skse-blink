@@ -603,7 +603,12 @@ namespace BlinkDash
 			// Cooldown: off unless configured, and only successful blinks count. Both sides of
 			// the comparison are whole milliseconds, so a 1000ms cooldown means exactly that.
 			if (settings.cooldownMs > 0) {
-				const int sinceMs = static_cast<int>(std::lround((now - lastBlinkClock.load(std::memory_order_acquire)) * 1000.0f));
+				// "Never blinked yet" is a clock of -1e9s, so the raw difference is far outside
+				// integer range: clamp it before converting. Without the clamp the cast wraps to
+				// a small ("looks recent") number and the cooldown rejects every blink for the
+				// whole session, because only a successful blink moves the clock.
+				const double sinceRaw = static_cast<double>(now - lastBlinkClock.load(std::memory_order_acquire)) * 1000.0;
+				const int    sinceMs = static_cast<int>((std::clamp)(sinceRaw, -1.0e6, 1.0e6));
 				if (sinceMs < settings.cooldownMs) {
 					BDI("blink[{}] REJECTED: cooldown, {}ms since the last blink of {}ms",
 						a_seq, sinceMs, settings.cooldownMs);
