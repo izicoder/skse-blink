@@ -1,0 +1,33 @@
+[b]A vibe-slopped blink/dodge SKSE plugin, because I didn't like the other ones.[/b]
+
+Hold a direction and tap the hotkey: you blink up to 200 units that way. One DLL for SE and AE, no ESP, no Papyrus, no new records — it reads input, casts read-only Havok rays and moves the player.
+
+[b]Requirements[/b]
+[list]
+[*]SKSE and Address Library
+[*]Optional: SKSE Menu Framework (in-game settings tab). Without it everything works, only the menu is missing.
+[/list]
+
+[b]Install[/b]
+Install with MO2/Vortex and enable. Settings live in SKSE/Plugins/BlinkDash.json, written on first run; updates never overwrite it, and older config files are converted automatically.
+
+[b]Features[/b]
+[list]
+[*][b]Tap to blink[/b] — hold WASD or the stick and tap; tap while standing still to blink where you face. Holding the key does nothing, so sprint/jump binds are safe.
+[*][b]Collision-aware[/b] — six body-height rays plus a body-volume probe at the landing: obstacles shorten the dash instead of cancelling it, and a 50-unit deadzone stops hotkey spam creeping through walls.
+[*][b]Slopes and stairs[/b] — ground under the max slope is followed up and down hills, and a riser or low obstacle with clear air above it counts as a step, so big staircases are climbed instead of blocked. Walls still block.
+[*][b]Momentum kept, landing snapped[/b] — controller velocity is restored so a mid-air blink keeps the jump going; on the ground you land on the surface below, in the air your height is kept.
+[*][b]Cost: stamina or magicka[/b] — configurable amount, charged in combat only by default, with an option to charge outside combat too. Optional required-perk gate; any perk in the load order.
+[*][b]Effect shader[/b] — any vanilla TESEffectShader, picked from a dropdown.
+[*][b]In-game menu[/b] (SKSE Menu Framework) — hotkey rebind, every setting, logging toggle, debug view and Reset defaults. Every change saves itself, no Apply button.
+[*][b]Debug view[/b] (off by default) — draws the last blink's rays and landing spot while you play.
+[*][b]SkyParkour friendly[/b] — the fall tracker is re-based on landing, so an interrupted fall is not charged as instant death.
+[/list]
+
+All settings are integers, the config is versioned and migrated in place, and unknown keys are kept.
+
+[b]Tested on 1.6.1170 (SKSE 2.2.8) only.[/b] That is the only runtime this has been run on. Other SE/AE builds may work because it goes through the Address Library, but that is a guess, not a promise.
+
+This mod is entirely AI-written (vibe-coded, not human-authored or reviewed). Treat it as a hobby project: expect rough edges and check it yourself before trusting it in your load order.
+
+[b]Source:[/b] [url=https://github.com/izicoder/skse-blink]izicoder/skse-blink[/url]
