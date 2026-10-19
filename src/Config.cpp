@@ -11,7 +11,7 @@ namespace BlinkDash
 		// reported and clamped here instead.
 		constexpr float kMinDistance = 100.0f;
 		constexpr float kMaxDistance = 1000.0f;
-		constexpr float kMaxStaminaCost = 100.0f;
+		constexpr float kMaxCost = 100.0f;
 		constexpr float kMinRetrigger = 0.02f;   // below this a human cannot tap it anyway
 		constexpr float kMaxRetrigger = 1.0f;
 		constexpr float kMaxCooldown = 2.0f;
@@ -39,16 +39,37 @@ namespace BlinkDash
 			return path;
 		}
 
+		// The resource is stored as a string: a hand-edited JSON stays readable, and an
+		// unknown value can be reported instead of silently turning into stamina.
+		std::string CostKey(CostResource a_resource)
+		{
+			return a_resource == CostResource::kMagicka ? "magicka" : "stamina";
+		}
+
+		std::optional<CostResource> CostFromKey(std::string_view a_key)
+		{
+			if (a_key == "stamina") {
+				return CostResource::kStamina;
+			}
+			if (a_key == "magicka") {
+				return CostResource::kMagicka;
+			}
+			return std::nullopt;
+		}
+
 		nlohmann::json ToJson(const Settings& a_settings)
 		{
 			return nlohmann::json{
 				{ "hotkey", a_settings.hotkey },
 				{ "distance", a_settings.distance },
-				{ "staminaCost", a_settings.staminaCost },
+				{ "costAmount", a_settings.costAmount },
+				{ "costResource", CostKey(a_settings.costResource) },
+				{ "costOutsideCombat", a_settings.costOutsideCombat },
 				{ "retriggerDelay", a_settings.retriggerDelay },
 				{ "cooldown", a_settings.cooldown },
 				{ "maxSlope", a_settings.maxSlope },
 				{ "effectShader", a_settings.effectShader },
+				{ "requiredPerk", a_settings.requiredPerk },
 				{ "debugOverlay", a_settings.debugOverlay },
 				{ "logging", a_settings.logging },
 			};
@@ -65,10 +86,11 @@ namespace BlinkDash
 	{
 		const auto& s = Get();
 		return std::format(
-			"hotkey=0x{:X} distance={:.0f} staminaCost={:.0f} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) maxSlope={:.0f}deg effectShader='{}' debugOverlay={} logging={}",
-			s.hotkey, s.distance, s.staminaCost, s.retriggerDelay, s.retriggerDelay * 1000.0f,
+			"hotkey=0x{:X} distance={:.0f} cost={:.0f} {} outsideCombat={} retriggerDelay={:.3f}s ({:.0f}ms) cooldown={:.3f}s ({:.0f}ms) maxSlope={:.0f}deg effectShader='{}' requiredPerk='{}' debugOverlay={} logging={}",
+			s.hotkey, s.distance, s.costAmount, CostKey(s.costResource), s.costOutsideCombat, s.retriggerDelay, s.retriggerDelay * 1000.0f,
 			s.cooldown, s.cooldown * 1000.0f, s.maxSlope,
-			s.effectShader.empty() ? "none" : s.effectShader, s.debugOverlay, s.logging);
+			s.effectShader.empty() ? "none" : s.effectShader,
+			s.requiredPerk.empty() ? "none" : s.requiredPerk, s.debugOverlay, s.logging);
 	}
 
 	std::filesystem::path Config::Path()
@@ -87,7 +109,7 @@ namespace BlinkDash
 			s.hotkey = 0x103;
 			changed = true;
 		}
-		if (std::isnan(s.distance) || std::isnan(s.staminaCost) || std::isnan(s.retriggerDelay) || std::isnan(s.maxSlope)) {
+		if (std::isnan(s.distance) || std::isnan(s.costAmount) || std::isnan(s.retriggerDelay) || std::isnan(s.maxSlope)) {
 			BDW("config: NaN found in the settings, resetting everything to defaults");
 			s = Settings{};
 			changed = true;
@@ -97,9 +119,9 @@ namespace BlinkDash
 			s.distance = std::clamp(s.distance, kMinDistance, kMaxDistance);
 			changed = true;
 		}
-		if (s.staminaCost < 0.0f || s.staminaCost > kMaxStaminaCost) {
-			BDW("config: staminaCost {:.1f} out of range, clamping to [0, {:.1f}]", s.staminaCost, kMaxStaminaCost);
-			s.staminaCost = std::clamp(s.staminaCost, 0.0f, kMaxStaminaCost);
+		if (s.costAmount < 0.0f || s.costAmount > kMaxCost) {
+			BDW("config: costAmount {:.1f} out of range, clamping to [0, {:.1f}]", s.costAmount, kMaxCost);
+			s.costAmount = std::clamp(s.costAmount, 0.0f, kMaxCost);
 			changed = true;
 		}
 		if (s.retriggerDelay < kMinRetrigger || s.retriggerDelay > kMaxRetrigger) {
@@ -121,6 +143,11 @@ namespace BlinkDash
 		if (s.effectShader.size() > 64) {
 			BDW("config: effectShader name is {} chars, truncating", s.effectShader.size());
 			s.effectShader.resize(64);
+			changed = true;
+		}
+		if (s.requiredPerk.size() > 64) {
+			BDW("config: requiredPerk name is {} chars, truncating", s.requiredPerk.size());
+			s.requiredPerk.resize(64);
 			changed = true;
 		}
 
@@ -167,8 +194,9 @@ namespace BlinkDash
 
 			auto& s = Get();
 			for (const auto& [key, value] : json.items()) {
-				if (key == "hotkey" || key == "distance" || key == "staminaCost" || key == "retriggerDelay" || key == "cooldown" ||
-					key == "maxSlope" || key == "effectShader" || key == "debugOverlay" || key == "logging") {
+				if (key == "hotkey" || key == "distance" || key == "costAmount" || key == "costResource" || key == "costOutsideCombat" ||
+					key == "staminaCost" || key == "retriggerDelay" || key == "cooldown" ||
+					key == "maxSlope" || key == "effectShader" || key == "requiredPerk" || key == "debugOverlay" || key == "logging") {
 					BD("config:   {} = {}", key, value.dump());
 				} else {
 					BDW("config:   ignoring obsolete option '{}' = {}", key, value.dump());
@@ -181,8 +209,25 @@ namespace BlinkDash
 			if (json.contains("distance")) {
 				s.distance = json.at("distance").get<float>();
 			}
-			if (json.contains("staminaCost")) {
-				s.staminaCost = json.at("staminaCost").get<float>();
+			if (json.contains("costAmount")) {
+				s.costAmount = json.at("costAmount").get<float>();
+			} else if (json.contains("staminaCost")) {
+				// Pre-1.1 key: the amount used to be stamina-only, so it still means the same
+				// number. Reading it keeps a hand-tuned cost alive when the new build is
+				// dropped over an old config; the next save rewrites the file with the new keys.
+				s.costAmount = json.at("staminaCost").get<float>();
+				BDW("config: legacy key 'staminaCost' = {:.1f} read as costAmount", s.costAmount);
+			}
+			if (json.contains("costResource")) {
+				const auto key = json.at("costResource").get<std::string>();
+				if (const auto parsed = CostFromKey(key)) {
+					s.costResource = *parsed;
+				} else {
+					BDW("config: unknown costResource '{}', keeping '{}'", key, CostKey(s.costResource));
+				}
+			}
+			if (json.contains("costOutsideCombat")) {
+				s.costOutsideCombat = json.at("costOutsideCombat").get<bool>();
 			}
 			if (json.contains("retriggerDelay")) {
 				s.retriggerDelay = json.at("retriggerDelay").get<float>();
@@ -195,6 +240,9 @@ namespace BlinkDash
 			}
 			if (json.contains("effectShader")) {
 				s.effectShader = json.at("effectShader").get<std::string>();
+			}
+			if (json.contains("requiredPerk")) {
+				s.requiredPerk = json.at("requiredPerk").get<std::string>();
 			}
 			if (json.contains("debugOverlay")) {
 				s.debugOverlay = json.at("debugOverlay").get<bool>();

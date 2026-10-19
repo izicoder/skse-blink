@@ -5,6 +5,7 @@
 #include "Effects.h"
 #include "Input.h"
 #include "Log.h"
+#include "Perks.h"
 #include "SKSEMenuFramework.h"
 
 namespace BlinkDash
@@ -518,6 +519,14 @@ namespace BlinkDash
 			// game (CrashLogger: BlinkDash.dll+001D821, RIP=0x0).
 			BD("  bleedout check: skipped on purpose, see Blink.cpp");
 
+			// Required-perk gate: "None" (or an unresolvable key) always passes, see
+			// Perks::PlayerHasRequired. Runs after the cheap checks so an ordinary
+			// rejected blink does not pay for the perk lookup.
+			if (!Perks::PlayerHasRequired(a_player, a_source)) {
+				BD("  -> REJECTED: required perk not unlocked");
+				return false;
+			}
+
 			auto* ui = RE::UI::GetSingleton();
 			if (ui) {
 				const bool consoleOpen = ui->IsMenuOpen(RE::Console::MENU_NAME);
@@ -579,51 +588,56 @@ namespace BlinkDash
 				}
 			}
 
-			RE::ActorValueOwner* staminaOwner = nullptr;
+			// The cost is paid from stamina or magicka, and by default only in combat: out
+			// of combat the blink is free, which is what a "no drain out of combat" setup
+			// expects from anything that spends a bar. costOutsideCombat disables that
+			// filter for players who want the blink to cost something at all times.
+			const auto costValue = settings.costResource == CostResource::kMagicka ? RE::ActorValue::kMagicka : RE::ActorValue::kStamina;
+			const char* costName = settings.costResource == CostResource::kMagicka ? "magicka" : "stamina";
 
-			// The cost exists only in combat: out of combat the blink is free, which is
-			// what a "no stamina drain out of combat" setup expects from anything that
-			// spends stamina.
+			RE::ActorValueOwner* costOwner = nullptr;
+
 			const bool inCombat = player->IsInCombat();
-			BD("blink[{}] in combat={}", a_seq, inCombat);
+			BD("blink[{}] in combat={} cost resource={} amount={:.0f} outsideCombat={}",
+				a_seq, inCombat, costName, settings.costAmount, settings.costOutsideCombat);
 
-			if (settings.staminaCost <= 0.0f) {
-				BD("blink[{}] stamina: no cost configured, skipping the check", a_seq);
-			} else if (!inCombat) {
-				// Log the value as well: a report of "stamina went down out of combat" can
+			if (settings.costAmount <= 0.0f) {
+				BD("blink[{}] cost: no cost configured, skipping the {} check", a_seq, costName);
+			} else if (!inCombat && !settings.costOutsideCombat) {
+				// Log the value as well: a report of "the bar went down out of combat" can
 				// then be checked against what the blink actually saw at that moment.
-				float stamina = -1.0f;
+				float current = -1.0f;
 				if (auto* owner = player->AsActorValueOwner()) {
 					const auto vtable = *reinterpret_cast<const std::uintptr_t*>(owner);
 					if (vtable >= kMinPlausibleVtable) {
-						stamina = owner->GetActorValue(RE::ActorValue::kStamina);
+						current = owner->GetActorValue(costValue);
 					}
 				}
-				BD("blink[{}] stamina: out of combat, no cost charged (stamina {:.1f}, untouched)", a_seq, stamina);
+				BD("blink[{}] cost: out of combat, no {} charged ({} {:.1f}, untouched)", a_seq, costName, costName, current);
 			} else {
 				// NOTE: never call player->GetActorValue() / player->DamageActorValue()
 				// directly. Those use the ActorValueOwner base offset baked into the
 				// class layout (0x98 in this build), which does not match this runtime
 				// (0xB8 on 1.6.x) and crashed the game with a garbage vtable.
 				// AsActorValueOwner() is the runtime-versioned accessor and is correct.
-				BD("blink[{}] stamina: calling player->AsActorValueOwner()", a_seq);
+				BD("blink[{}] cost: calling player->AsActorValueOwner()", a_seq);
 				auto* owner = player->AsActorValueOwner();
 				const auto ownerAddress = reinterpret_cast<std::uintptr_t>(owner);
 				const auto vtable = owner ? *reinterpret_cast<const std::uintptr_t*>(owner) : 0;
-				BD("blink[{}] stamina: owner=0x{:X} (player+0x{:X}) vtable=0x{:X}",
+				BD("blink[{}] cost: owner=0x{:X} (player+0x{:X}) vtable=0x{:X}",
 					a_seq, ownerAddress, ownerAddress - reinterpret_cast<std::uintptr_t>(player), vtable);
 
 				if (owner == nullptr || vtable < kMinPlausibleVtable) {
-					BDE("blink[{}] stamina: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
+					BDE("blink[{}] cost: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
 						a_seq, vtable);
 				} else {
-					const float stamina = owner->GetActorValue(RE::ActorValue::kStamina);
-					BD("blink[{}] stamina: current={:.1f} cost={:.1f}", a_seq, stamina, settings.staminaCost);
-					if (stamina < settings.staminaCost) {
-						BDI("blink[{}] REJECTED: not enough stamina", a_seq);
+					const float current = owner->GetActorValue(costValue);
+					BD("blink[{}] cost: current {}={:.1f} cost={:.1f}", a_seq, costName, current, settings.costAmount);
+					if (current < settings.costAmount) {
+						BDI("blink[{}] REJECTED: not enough {}", a_seq, costName);
 						return false;
 					}
-					staminaOwner = owner;  // spent after the teleport, so a rejected blink is free
+					costOwner = owner;  // spent after the teleport, so a rejected blink is free
 				}
 			}
 
@@ -815,13 +829,14 @@ namespace BlinkDash
 			const RE::NiPoint3 after = player->GetPosition();
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
 
-			if (staminaOwner) {
+			if (costOwner) {
 				// The damage modifier is a signed offset on the current value, so the
-				// cost has to be passed negative to make it a drain.
-				const float drain = -settings.staminaCost;
-				BD("blink[{}] stamina: calling ModActorValue(kDamage, kStamina, {:.1f})", a_seq, drain);
-				staminaOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, drain);
-				BD("blink[{}] stamina: after={:.1f}", a_seq, staminaOwner->GetActorValue(RE::ActorValue::kStamina));
+				// cost has to be passed negative to make it a drain. Stamina and magicka
+				// behave the same here: both regenerate back to their max.
+				const float drain = -settings.costAmount;
+				BD("blink[{}] cost: calling ModActorValue(kDamage, {}, {:.1f})", a_seq, costName, drain);
+				costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, drain);
+				BD("blink[{}] cost: {} after={:.1f}", a_seq, costName, costOwner->GetActorValue(costValue));
 			}
 
 			Effects::PlayOnPlayer("blink");

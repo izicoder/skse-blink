@@ -5,12 +5,14 @@
 #include "Effects.h"
 #include "Input.h"
 #include "Log.h"
+#include "Perks.h"
 #include "UI.h"
 
 namespace
 {
 	std::atomic<bool> s_configLoaded{ false };
 	std::atomic<bool> s_effectsInit{ false };
+	std::atomic<bool> s_perksInit{ false };
 	std::atomic<bool> s_inputRegistered{ false };
 	std::atomic<bool> s_uiRegistered{ false };
 
@@ -59,6 +61,11 @@ namespace
 						BlinkDash::Effects::Init();
 					} else {
 						BD("msg: effects were already initialised, not doing it twice");
+					}
+					if (!s_perksInit.exchange(true)) {
+						BlinkDash::Perks::Init();
+					} else {
+						BD("msg: perks were already initialised, not doing it twice");
 					}
 					if (!s_inputRegistered.exchange(true)) {
 						BlinkDash::Input::Register();

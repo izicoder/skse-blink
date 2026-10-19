@@ -44,7 +44,9 @@ these defaults on first run and never overwritten by builds.
 | Hotkey | Mouse 4 (`0x103`) | keyboard key, mouse button or gamepad button |
 | Distance (max) | 200 units | 100–1000 |
 | Max slope | 45° | 20–80 |
-| Stamina cost | 10 (charged in combat only) | 0–100 |
+| Cost per blink | 10 (charged in combat only) | 0–100 |
+| Cost resource | Stamina | Stamina, Magicka |
+| Charge outside combat | off | — |
 | Tap window | 200 ms | 20–1000 |
 | Cooldown | 1000 ms | 0–2000 |
 | Effect shader | `Skyrim.esm:000E5C` | any discovered shader, or `None` |
@@ -158,8 +160,8 @@ paused, so it never covers the cursor.
 
 ## Why a blink can refuse
 
-Logged with the reason every time: nothing held and not moving · not enough stamina · inside the cooldown ·
-inside the deadzone (something solid within 50 units) · no clear landing spot for the body.
+Logged with the reason every time: nothing held and not moving · not enough stamina/magicka · inside the
+cooldown · inside the deadzone (something solid within 50 units) · no clear landing spot for the body.
 
 ## License
 

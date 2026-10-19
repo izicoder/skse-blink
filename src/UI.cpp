@@ -5,6 +5,7 @@
 #include "Effects.h"
 #include "Input.h"
 #include "Log.h"
+#include "Perks.h"
 #include "SKSEMenuFramework.h"
 
 // The vendored SKSEMenuFramework.h exposes the ImGui API in namespace ImGuiMCP;
@@ -20,7 +21,7 @@ namespace BlinkDash::UI
 		// actually travel.
 		constexpr float kMinDistance = 100.0f;
 		constexpr float kMaxDistance = 1000.0f;
-		constexpr float kMaxStaminaCost = 100.0f;
+		constexpr float kMaxCost = 100.0f;
 		constexpr float kMinTapWindowMs = 20.0f;
 		constexpr float kMaxTapWindowMs = 1000.0f;
 		constexpr float kMinCooldownMs = 0.0f;
@@ -159,6 +160,47 @@ namespace BlinkDash::UI
 			return 0;
 		}
 
+		// Same pattern as the effect shader dropdown: "None" plus one entry per form.
+		std::vector<std::string> perkLabelStorage;
+		std::vector<const char*> perkLabelPtrs;
+
+		void EnsurePerkLabels()
+		{
+			const auto& entries = Perks::Entries();
+			if (perkLabelPtrs.size() == entries.size() + 1) {
+				return;
+			}
+
+			perkLabelStorage.clear();
+			perkLabelStorage.reserve(entries.size() + 1);
+			perkLabelStorage.emplace_back("None (always on)");
+			for (const auto& entry : entries) {
+				perkLabelStorage.push_back(entry.Label());
+			}
+
+			perkLabelPtrs.clear();
+			perkLabelPtrs.reserve(perkLabelStorage.size());
+			for (auto& label : perkLabelStorage) {
+				perkLabelPtrs.push_back(label.c_str());
+			}
+			BDI("ui: required perk dropdown built with {} entries", perkLabelPtrs.size());
+		}
+
+		int CurrentPerkIndex()
+		{
+			const auto& want = Config::Get().requiredPerk;
+			if (want.empty() || want == "None") {
+				return 0;
+			}
+			const auto& entries = Perks::Entries();
+			for (std::size_t i = 0; i < entries.size(); ++i) {
+				if (entries[i].Key() == want) {
+					return static_cast<int>(i) + 1;
+				}
+			}
+			return 0;  // stale key: show "None" rather than an index the list cannot back
+		}
+
 		void RenderHotkey(std::uint32_t& a_hotkey)
 		{
 			if (capturing.load()) {
@@ -202,6 +244,20 @@ namespace BlinkDash::UI
 			}
 		}
 
+		// Two items rather than a checkbox: a resource picker reads as a choice, and a
+		// third option (none) would just duplicate a cost of 0.
+		void RenderCostResource(float a_itemWidth, Settings& a_settings)
+		{
+			const char* items[] = { "Stamina", "Magicka" };
+			int current = a_settings.costResource == CostResource::kMagicka ? 1 : 0;
+			ImGui::SetNextItemWidth(a_itemWidth);
+			if (ImGui::Combo("Cost resource", &current, items, static_cast<int>(std::size(items)))) {
+				a_settings.costResource = current == 1 ? CostResource::kMagicka : CostResource::kStamina;
+				BDI("ui: cost resource changed -> {}", current == 1 ? "magicka" : "stamina");
+				SaveNow("cost resource changed");
+			}
+		}
+
 		void RenderReset(Settings& a_settings)
 		{
 			const auto armed = resetArmedTicks.load(std::memory_order_acquire);
@@ -241,6 +297,33 @@ namespace BlinkDash::UI
 					resetArmedTicks.store(0, std::memory_order_release);
 					BD("ui: Reset defaults cancelled");
 				}
+			}
+		}
+
+		// The required-perk picker, so it sits next to RenderReset but reads as its own
+		// block in Render().
+		void RenderRequiredPerk(float a_itemWidth, Settings& a_settings)
+		{
+			EnsurePerkLabels();
+			int current = CurrentPerkIndex();
+			ImGui::SetNextItemWidth(a_itemWidth);
+			if (ImGui::Combo("Required perk (blink only with it)", &current, perkLabelPtrs.data(), static_cast<int>(perkLabelPtrs.size()))) {
+				a_settings.requiredPerk = (current <= 0) ? std::string{ "None" } : Perks::Entries()[static_cast<std::size_t>(current) - 1].Key();
+				BDI("ui: required perk changed -> '{}'", a_settings.requiredPerk);
+				Perks::RefreshSelection();
+				SaveNow("required perk changed");
+			}
+			// A configured key that no longer resolves (plugin uninstalled, hand-typed id) is a
+			// non-empty value that the list cannot back: current == 0 means the combo could not
+			// find it, which is exactly the case the gate is silently ignoring.
+			const auto& key = a_settings.requiredPerk;
+			const bool configured = !key.empty() && key != "None";
+			if (configured && current == 0) {
+				// A configured key no longer resolves (uninstalled plugin, hand-typed id):
+				// the gate is being ignored, say so instead of looking "always on".
+				ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kWarnColor);
+				ImGui::TextWrapped("A configured perk key could not be found, so the perk gate is currently ignored.");
+				ImGui::PopStyleColor();
 			}
 		}
 
@@ -594,6 +677,7 @@ namespace BlinkDash::UI
 
 			ImGui::SeparatorText("Activation");
 			RenderHotkey(settings.hotkey);
+			RenderRequiredPerk(itemWidth, settings);
 
 			ImGui::SeparatorText("Blink");
 			ImGui::SetNextItemWidth(itemWidth);
@@ -609,9 +693,18 @@ namespace BlinkDash::UI
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderFloat("Stamina cost per blink (combat)", &settings.staminaCost, 0.0f, kMaxStaminaCost, "%.0f")) {
-				BD("ui: staminaCost -> {:.0f}", settings.staminaCost);
-				MarkChanged("staminaCost");
+			if (ImGui::SliderFloat("Cost per blink", &settings.costAmount, 0.0f, kMaxCost, "%.0f")) {
+				BD("ui: costAmount -> {:.0f}", settings.costAmount);
+				MarkChanged("costAmount");
+			}
+
+			RenderCostResource(itemWidth, settings);
+
+			// Off by default: the cost has always existed in combat only, so this is the
+			// opt-in for a blink that also spends a bar while just walking around.
+			if (ImGui::Checkbox("Charge the cost outside combat", &settings.costOutsideCombat)) {
+				BD("ui: costOutsideCombat -> {}", settings.costOutsideCombat);
+				MarkChanged("costOutsideCombat");
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
