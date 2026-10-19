@@ -21,6 +21,11 @@
 	In both cases the notes default to the commit subjects since the last release tag, so the changelog
 	mirrors the git log without a second file to maintain; -Notes replaces them.
 
+	Two guards exist because a wrong publish cannot be undone from here: the DLL inside the archive must
+	report the -Version being published (a stale build tree or a -SkipBuild package is the usual way a
+	release goes out with the wrong number), and a Nexus file entry that already sits at that version is
+	refused unless -Force is given (re-uploading would create a duplicate version).
+
 .PARAMETER Version
 	The release being published, e.g. 1.2.2. Must match packages\BlinkDash-<Version>.zip as produced
 	by Build-Release.ps1.
@@ -51,6 +56,10 @@
 	Validate the archive, the Nexus ids and the pushed commit, print what would be uploaded, and
 	publish nothing. The only network calls are read-only.
 
+.PARAMETER Force
+	Publish a version the Nexus file entry already reports. Only for re-doing a publish that failed
+	half-way; it creates a second version with the same number.
+
 .EXAMPLE
 	# publish 1.2.2 to both places
 	.\tools\Publish-Release.ps1 -Version 1.2.2 -Nexus -GitHub
@@ -73,7 +82,8 @@ param(
 	[int]$FileId = 822769,
 	[int]$ModId = 195907,
 	[string]$ApiKey,
-	[switch]$DryRun
+	[switch]$DryRun,
+	[switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,18 +107,38 @@ $game = 'skyrimspecialedition'
 # ---------------------------------------------------------------------------
 function Test-ReleaseArchive
 {
-	param([string]$Path)
+	param([string]$Path, [string]$Version)
 
 	# A release with no DLL in it is a broken package. Checking here means failing before Nexus has
 	# a file version to undo, and before GitHub has a release pointing at nothing.
 	Add-Type -AssemblyName System.IO.Compression.FileSystem
 	$zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
-	try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) }
+	try {
+		$names = @($zip.Entries | ForEach-Object { $_.FullName })
+		foreach ($required in 'SKSE/Plugins/BlinkDash.dll', 'SKSE/Plugins/BlinkDash.ShaderNames.json') {
+			if ($names -notcontains $required) { throw "$Path does not contain $required - refusing to publish it." }
+		}
+
+		# -Version is a claim about the archive, and the plugin logs BLINKDASH_VERSION at startup, so
+		# that string literal sits in the DLL. Reading it back catches the one way a release goes out
+		# wrong without anyone noticing: a stale build tree (or -SkipBuild) packaged under a new number.
+		$stream = $zip.GetEntry('SKSE/Plugins/BlinkDash.dll').Open()
+		try {
+			$memory = [System.IO.MemoryStream]::new()
+			$stream.CopyTo($memory)
+			$bytes = $memory.ToArray()
+		}
+		finally { $stream.Dispose() }
+	}
 	finally { $zip.Dispose() }
 
-	foreach ($required in 'SKSE/Plugins/BlinkDash.dll', 'SKSE/Plugins/BlinkDash.ShaderNames.json') {
-		if ($names -notcontains $required) { throw "$Path does not contain $required - refusing to publish it." }
+	# Latin1 decodes byte-for-byte, and the null terminator on the needle stops "1.2.1" from matching
+	# inside a longer literal such as "1.2.10".
+	$text = [System.Text.Encoding]::Latin1.GetString($bytes)
+	if ($text.IndexOf("$Version`0", [System.StringComparison]::Ordinal) -lt 0) {
+		throw "The DLL in $Path does not report version $Version - it was built with a different -Version (usually a stale build tree, or -SkipBuild after a bump). Rebuild it before publishing."
 	}
+
 	return $names
 }
 
@@ -219,7 +249,8 @@ function Publish-NexusFile
 		[int]$ModId,
 		[string]$Version,
 		[string]$Notes,
-		[switch]$DryRun
+		[switch]$DryRun,
+		[switch]$Force
 	)
 
 	$headers = @{ apikey = $Key; 'User-Agent' = 'BlinkDash/release' }
@@ -231,6 +262,15 @@ function Publish-NexusFile
 	$target = $files | Where-Object { $_.file_id -eq $FileId } | Select-Object -First 1
 	if (-not $target) { throw "File $FileId is not a file of mod $ModId ('$($mod.name)')." }
 	Write-Host "Nexus: mod $ModId '$($mod.name)' v$($mod.version); target file $FileId '$($target.name)' v$($target.version) [$($target.category_name)]"
+
+	# Nexus happily accepts a second version carrying the same number, and the API has no delete for
+	# one. A half-failed publish is the only reason to want that, so it has to be asked for.
+	if ($target.version -eq $Version -and -not $Force) {
+		throw "File $FileId already reports version $($target.version) on Nexus - publishing $Version again would create a duplicate. Pass -Force only if that is what you want."
+	}
+	if ($target.version -eq $Version) {
+		Write-Warning "File $FileId already reports version $($target.version); -Force given, so this adds a second version with the same number."
+	}
 
 	if ($DryRun) {
 		Write-Host ("Dry run: would upload {0} ({1:N0} bytes) as version {2} of file {3}, sync the mod version and post the changelog." -f `
@@ -299,11 +339,17 @@ function Publish-NexusFile
 	Write-Host "  created file version $($created.id) '$($created.name)'"
 
 	# 6. The changelog is what users actually read on the mod page, so it gets the same text as the
-	#    GitHub release body.
+	#    GitHub release body. It is the only cosmetic step, and it runs after the version is live, so a
+	#    failure here must not fail the publish - that would push towards re-uploading and a duplicate.
 	if ($Notes) {
 		$changelogBody = @{ version = $Version; changelog = $Notes } | ConvertTo-Json -Compress
-		Invoke-ApiRequest -Method Post -Uri "$nexusBase/mods/$ModId/changelogs" -Headers $headers -Body $changelogBody | Out-Null
-		Write-Host '  changelog entry added'
+		try {
+			Invoke-ApiRequest -Method Post -Uri "$nexusBase/mods/$ModId/changelogs" -Headers $headers -Body $changelogBody | Out-Null
+			Write-Host '  changelog entry added'
+		}
+		catch {
+			Write-Warning "The file version is published, but adding the changelog entry failed: $($_.Exception.Message) - add it on the mod page."
+		}
 	}
 }
 
@@ -352,14 +398,14 @@ function Publish-GitHubRelease
 # ---------------------------------------------------------------------------
 Write-Host ("Publishing BlinkDash {0}: {1} ({2:N0} bytes)" -f `
 	$Version, $archiveItem.Name, $archiveItem.Length)
-Write-Host "  archive has $((Test-ReleaseArchive -Path $archiveItem.FullName).Count) entries"
+Write-Host "  archive has $((Test-ReleaseArchive -Path $archiveItem.FullName -Version $Version).Count) entries"
 
 $notes = Get-ReleaseNotes -Override $Notes -Version $Version
 
 if ($Nexus) {
 	$key = Get-NexusApiKey -Explicit $ApiKey
 	Publish-NexusFile -Key $key -Path $archiveItem.FullName -FileId $FileId -ModId $ModId `
-		-Version $Version -Notes $notes -DryRun:$DryRun
+		-Version $Version -Notes $notes -DryRun:$DryRun -Force:$Force
 }
 
 if ($GitHub) {
