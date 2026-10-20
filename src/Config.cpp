@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "Config.h"
+#include "Limits.h"
 #include "Log.h"
 
 namespace BlinkDash
@@ -11,18 +12,11 @@ namespace BlinkDash
 		// a copy or a few assignments, so recursion is cheaper than splitting the API.
 		std::recursive_mutex s_lock;
 
-		// Distance bounds are the menu slider bounds, which are also Blink.cpp's
-		// kMaxDistanceCap: anything outside is silently capped at blink time, so it is
-		// reported and clamped here instead. Every tunable is an integer: the menu sliders
-		// are integer steps, so nothing is lost by storing them exactly.
-		constexpr int kMinDistance = 100;
-		constexpr int kMaxDistance = 1000;
-		constexpr int kMaxCost = 100;
-		constexpr int kMinRetriggerMs = 20;       // below this a human cannot tap it anyway
-		constexpr int kMaxRetriggerMs = 1000;
-		constexpr int kMaxCooldownMs = 2000;
-		constexpr int kMinSlope = 20;             // below this even stairs would be treated as walls
-		constexpr int kMaxSlope = 80;
+		// Distance bounds are the menu slider bounds, which are also the blink's hard cap:
+		// anything outside is refused, so it is reported and clamped here instead. Every tunable
+		// is an integer: the menu sliders are integer steps, so nothing is lost by storing them
+		// exactly. The values themselves live in Limits.h, shared with the menu and the blink.
+		using namespace Limits;
 
 		// Same path discovery as before: the JSON sits next to the loaded DLL,
 		// so under MO2 it lives inside the mod folder and not the game install.
@@ -288,9 +282,9 @@ namespace BlinkDash
 			s.costAmount = std::clamp(s.costAmount, 0, kMaxCost);
 			changed = true;
 		}
-		if (s.retriggerMs < kMinRetriggerMs || s.retriggerMs > kMaxRetriggerMs) {
-			BDW("config: retriggerMs {} out of range, clamping to [{}, {}]", s.retriggerMs, kMinRetriggerMs, kMaxRetriggerMs);
-			s.retriggerMs = std::clamp(s.retriggerMs, kMinRetriggerMs, kMaxRetriggerMs);
+		if (s.retriggerMs < kMinTapWindowMs || s.retriggerMs > kMaxTapWindowMs) {
+			BDW("config: retriggerMs {} out of range, clamping to [{}, {}]", s.retriggerMs, kMinTapWindowMs, kMaxTapWindowMs);
+			s.retriggerMs = std::clamp(s.retriggerMs, kMinTapWindowMs, kMaxTapWindowMs);
 			changed = true;
 		}
 		if (s.cooldownMs < 0 || s.cooldownMs > kMaxCooldownMs) {
@@ -298,9 +292,9 @@ namespace BlinkDash
 			s.cooldownMs = std::clamp(s.cooldownMs, 0, kMaxCooldownMs);
 			changed = true;
 		}
-		if (s.maxSlope < kMinSlope || s.maxSlope > kMaxSlope) {
-			BDW("config: maxSlope {} out of range, clamping to [{}, {}]", s.maxSlope, kMinSlope, kMaxSlope);
-			s.maxSlope = std::clamp(s.maxSlope, kMinSlope, kMaxSlope);
+		if (s.maxSlope < kMinSlopeDegrees || s.maxSlope > kMaxSlopeDegrees) {
+			BDW("config: maxSlope {} out of range, clamping to [{}, {}]", s.maxSlope, kMinSlopeDegrees, kMaxSlopeDegrees);
+			s.maxSlope = std::clamp(s.maxSlope, kMinSlopeDegrees, kMaxSlopeDegrees);
 			changed = true;
 		}
 		if (s.effectShader.size() > 64) {

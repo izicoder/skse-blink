@@ -4,6 +4,7 @@
 #include "Debug.h"
 #include "Effects.h"
 #include "Input.h"
+#include "Limits.h"
 #include "Log.h"
 #include "Perks.h"
 #include "SKSEMenuFramework.h"
@@ -18,10 +19,8 @@ namespace BlinkDash
 	namespace
 	{
 		// Internal tuning that is not exposed in the menu.
-		constexpr float kMaxDistanceCap = 1000.0f;
-		// Slope bounds for the clamp below: the same numbers Config::Validate and the menu use.
-		constexpr int   kMinSlopeDegrees = 20;
-		constexpr int   kMaxSlopeDegrees = 80;
+		// Distance and slope bounds come from Limits.h, shared with Config::Validate and the menu.
+		using namespace Limits;
 		constexpr float kClearance = 40.0f;        // pull back from a wall we hit
 		constexpr float kMinTravel = 10.0f;        // shortest blink worth doing
 		// No blink at all when the nearest obstacle is inside this: it is what stops a
@@ -739,7 +738,7 @@ namespace BlinkDash
 
 			// The configured distance is an integer; the geometry below is float, so it is
 			// clamped as an integer first and converted once.
-			const int distanceCap = static_cast<int>(kMaxDistanceCap);
+			const int distanceCap = kMaxDistance;
 			const int clampedDistance = std::clamp(settings.distance, 0, distanceCap);
 			const float distance = static_cast<float>(clampedDistance);
 			if (clampedDistance < static_cast<int>(kMinTravel)) {

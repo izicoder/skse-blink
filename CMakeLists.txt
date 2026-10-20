@@ -79,6 +79,7 @@ set(SOURCES
 	src/Debug.h
 	src/Debug.cpp
 	src/Input.h
+	src/Limits.h
 	src/Perks.h
 	src/Perks.cpp
 	src/UI.h

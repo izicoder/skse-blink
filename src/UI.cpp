@@ -4,6 +4,7 @@
 #include "Debug.h"
 #include "Effects.h"
 #include "Input.h"
+#include "Limits.h"
 #include "Log.h"
 #include "Perks.h"
 #include "SKSEMenuFramework.h"
@@ -16,18 +17,9 @@ namespace BlinkDash::UI
 {
 	namespace
 	{
-		// Menu ranges. Distance matches Blink.cpp's kMaxDistanceCap and the clamp in
-		// Config::Validate, so the slider can never ask for more than the blink will
-		// actually travel.
-		constexpr int kMinDistance = 100;
-		constexpr int kMaxDistance = 1000;
-		constexpr int kMaxCost = 100;
-		constexpr int kMinTapWindowMs = 20;
-		constexpr int kMaxTapWindowMs = 1000;
-		constexpr int kMinCooldownMs = 0;
-		constexpr int kMaxCooldownMs = 2000;
-		constexpr int kMinSlopeDeg = 20;
-		constexpr int kMaxSlopeDeg = 80;
+		// Menu ranges come from Limits.h, which is also what Config::Validate and the blink
+		// itself use: a slider can never ask for a value the blink would clamp or refuse.
+		using namespace Limits;
 
 		// Sliders fire every frame while dragging, so writes are debounced; anything
 		// discrete (checkbox, dropdown, rebind, reset) saves immediately, and a
@@ -691,7 +683,7 @@ namespace BlinkDash::UI
 			}
 
 			ImGui::SetNextItemWidth(itemWidth);
-			if (ImGui::SliderInt("Max climbable slope (deg)", &settings.maxSlope, kMinSlopeDeg, kMaxSlopeDeg)) {
+			if (ImGui::SliderInt("Max climbable slope (deg)", &settings.maxSlope, kMinSlopeDegrees, kMaxSlopeDegrees)) {
 				BD("ui: maxSlope -> {}", settings.maxSlope);
 				MarkChanged("maxSlope");
 			}
