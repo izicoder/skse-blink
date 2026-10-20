@@ -24,3 +24,6 @@ compile_commands.json
 
 # Agent task logs written by the dev tooling
 .pi/
+
+# CodeGraph index (local SQLite knowledge graph)
+.codegraph/
