@@ -46,8 +46,10 @@ namespace BlinkDash::Debug
 
 	void Record(Snapshot a_snapshot);
 
-	// False when no blink has been recorded yet.
-	[[nodiscard]] bool Latest(Snapshot& a_out);
+	// The most recent blink, or nullptr when none has been recorded. Handed out by shared
+	// pointer so the render thread never copies 40 segments and two strings while the game
+	// thread is overwriting them.
+	[[nodiscard]] std::shared_ptr<const Snapshot> Latest();
 
 	void Clear();
 }

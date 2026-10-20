@@ -524,8 +524,10 @@ namespace BlinkDash::UI
 			static std::atomic<int> frames{ 0 };
 			const int frame = frames.fetch_add(1) + 1;
 
-			Debug::Snapshot snapshot;
-			if (!Debug::Latest(snapshot)) {
+			// Handed out by shared pointer rather than copied: the game thread can be
+			// publishing a new snapshot while this frame is reading the old one.
+			const auto snapshot = Debug::Latest();
+			if (!snapshot) {
 				return;
 			}
 
@@ -539,7 +541,7 @@ namespace BlinkDash::UI
 			}
 			if (frame <= 3) {
 				BD("overlay: frame {} display {:.0f}x{:.0f}, {} segments recorded",
-					frame, io->DisplaySize.x, io->DisplaySize.y, snapshot.count);
+					frame, io->DisplaySize.x, io->DisplaySize.y, snapshot->count);
 			}
 
 			// Clear of the compass, which owns the very top left of the HUD. Two columns:
@@ -561,19 +563,19 @@ namespace BlinkDash::UI
 			// panel can be sized to fit it instead of guessed at.
 			std::vector<std::pair<ImGui::ImU32, std::string>> stats;
 			stats.emplace_back(kBodyText, std::format("travel {:.0f} of {:.0f} units{}",
-				snapshot.travel, snapshot.requested, snapshot.shortened ? "  (shortened)" : ""));
-			stats.emplace_back(kBodyText, std::format("blocked {}   body fit pulls {}", snapshot.blocked ? "yes" : "no", snapshot.pulls));
+				snapshot->travel, snapshot->requested, snapshot->shortened ? "  (shortened)" : ""));
+			stats.emplace_back(kBodyText, std::format("blocked {}   body fit pulls {}", snapshot->blocked ? "yes" : "no", snapshot->pulls));
 			stats.emplace_back(kBodyText, std::format("direction ({:.2f}, {:.2f})   {}",
-				snapshot.direction.x, snapshot.direction.y,
-				snapshot.grounded ? (snapshot.slopeFollowed ? "on ground, followed the slope" : "on ground") : "airborne"));
-			stats.emplace_back(kBodyText, std::format("climbed {:+.0f} units", snapshot.climb));
+				snapshot->direction.x, snapshot->direction.y,
+				snapshot->grounded ? (snapshot->slopeFollowed ? "on ground, followed the slope" : "on ground") : "airborne"));
+			stats.emplace_back(kBodyText, std::format("climbed {:+.0f} units", snapshot->climb));
 			stats.emplace_back(kBodyText, std::format("slope limit {}deg   surface {:.1f}deg",
-				Config::Get().maxSlope, snapshot.groundSlopeDegrees));
-			stats.emplace_back(kBodyText, std::format("walked over {} probe{}", snapshot.walked, snapshot.walked == 1 ? "" : "s"));
+				Config::Get().maxSlope, snapshot->groundSlopeDegrees));
+			stats.emplace_back(kBodyText, std::format("walked over {} probe{}", snapshot->walked, snapshot->walked == 1 ? "" : "s"));
 
 			std::vector<std::pair<ImGui::ImU32, std::string>> hits;
-			for (std::size_t i = 0; i < snapshot.count && hits.size() < 6; ++i) {
-				const auto& segment = snapshot.segments[i];
+			for (std::size_t i = 0; i < snapshot->count && hits.size() < 6; ++i) {
+				const auto& segment = snapshot->segments[i];
 				if (!segment.hit) {
 					continue;
 				}
@@ -593,12 +595,12 @@ namespace BlinkDash::UI
 			ImGui::ImDrawListManager::AddRect(drawList, panel,
 				ImGui::ImVec2{ panel.x + kPanelWidth, panelBottom }, kPanelEdge, 6.0f, 0, 1.0f);
 
-			ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ textX, titleY }, kTitleText, snapshot.headline.c_str());
+			ImGui::ImDrawListManager::AddText(drawList, ImGui::ImVec2{ textX, titleY }, kTitleText, snapshot->headline.c_str());
 			ImGui::ImDrawListManager::AddLine(drawList,
 				ImGui::ImVec2{ textX, titleY + kRowHeight }, ImGui::ImVec2{ panel.x + kPanelWidth - kPad, titleY + kRowHeight },
 				IM_COL32(70, 72, 86, 200), 1.0f);
 
-			DrawBlinkDiagram(drawList, snapshot, ImGui::ImVec2{ textX, contentY }, kDiagramSize);
+			DrawBlinkDiagram(drawList, *snapshot, ImGui::ImVec2{ textX, contentY }, kDiagramSize);
 
 			// The right column: the numbers, then what actually hit.
 			float statsY = contentY;
@@ -647,13 +649,13 @@ namespace BlinkDash::UI
 				MarkChanged("debugOverlay");
 			}
 
-			Debug::Snapshot snapshot;
-			if (Debug::Latest(snapshot)) {
+			const auto snapshot = Debug::Latest();
+			if (snapshot) {
 				ImGui::Spacing();
 				ImGui::PushStyleColor(ImGui::ImGuiCol_Text, kValueColor);
 				ImGui::TextUnformatted("Last blink");
 				ImGui::PopStyleColor();
-				Body(snapshot.summary.c_str());
+				Body(snapshot->summary.c_str());
 			} else {
 				Body("No blink recorded yet.");
 			}

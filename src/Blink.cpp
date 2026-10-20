@@ -620,6 +620,349 @@ namespace BlinkDash
 			return true;
 		}
 
+		// Whether the blink may go ahead, and who pays for it. Writes the paying actor value
+		// owner on success; returns false when the bar is too low, which rejects the blink
+		// before anything has moved.
+		bool CheckCost(RE::PlayerCharacter* a_player, std::uint64_t a_seq, const Settings& a_settings,
+			RE::ActorValue a_costValue, const char* a_costName, RE::ActorValueOwner*& a_costOwner)
+		{
+			a_costOwner = nullptr;
+
+			const int  costAmount = a_settings.costAmount;
+			const bool inCombat = a_player->IsInCombat();
+			BD("blink[{}] in combat={} cost resource={} amount={} outsideCombat={}",
+				a_seq, inCombat, a_costName, costAmount, a_settings.costOutsideCombat);
+
+			if (costAmount <= 0) {
+				BD("blink[{}] cost: no cost configured, skipping the {} check", a_seq, a_costName);
+				return true;
+			}
+			if (!inCombat && !a_settings.costOutsideCombat) {
+				// Log the value as well: a report of "the bar went down out of combat" can
+				// then be checked against what the blink actually saw at that moment.
+				int current = -1;
+				if (auto* owner = a_player->AsActorValueOwner()) {
+					const auto vtable = *reinterpret_cast<const std::uintptr_t*>(owner);
+					if (vtable >= kMinPlausibleVtable) {
+						current = static_cast<int>(std::lround(owner->GetActorValue(a_costValue)));
+					}
+				}
+				BD("blink[{}] cost: out of combat, no {} charged ({} {}, untouched)", a_seq, a_costName, a_costName, current);
+				return true;
+			}
+
+			// NOTE: never call player->GetActorValue() / player->DamageActorValue()
+			// directly. Those use the ActorValueOwner base offset baked into the
+			// class layout (0x98 in this build), which does not match this runtime
+			// (0xB8 on 1.6.x) and crashed the game with a garbage vtable.
+			// AsActorValueOwner() is the runtime-versioned accessor and is correct.
+			BD("blink[{}] cost: calling player->AsActorValueOwner()", a_seq);
+			auto*      owner = a_player->AsActorValueOwner();
+			const auto ownerAddress = reinterpret_cast<std::uintptr_t>(owner);
+			const auto vtable = owner ? *reinterpret_cast<const std::uintptr_t*>(owner) : 0;
+			BD("blink[{}] cost: owner=0x{:X} (player+0x{:X}) vtable=0x{:X}",
+				a_seq, ownerAddress, ownerAddress - reinterpret_cast<std::uintptr_t>(a_player), vtable);
+
+			if (owner == nullptr || vtable < kMinPlausibleVtable) {
+				BDE("blink[{}] cost: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
+					a_seq, vtable);
+				return true;
+			}
+
+			const int current = static_cast<int>(std::lround(owner->GetActorValue(a_costValue)));
+			BD("blink[{}] cost: current {}={} cost={}", a_seq, a_costName, current, costAmount);
+			if (current < costAmount) {
+				BDI("blink[{}] REJECTED: not enough {}", a_seq, a_costName);
+				return false;
+			}
+			a_costOwner = owner;  // spent after the teleport, so a rejected blink is free
+			return true;
+		}
+
+		// Where the blink lands, or ok=false when there is nowhere to land. Everything the
+		// debug view needs that the rays discover is written straight into the snapshot.
+		struct Landing
+		{
+			bool         ok{ false };
+			RE::NiPoint3 point{};
+			float        travel{ 0.0f };   // the distance the body travels, after shortening
+			float        travelled{ 0.0f };  // the same measured from the feet, including height
+			int          pulls{ 0 };
+			bool         blocked{ false };
+			bool         grounded{ false };
+			const char*  heightSource{ "kept height (airborne)" };
+		};
+
+		Landing PlanLanding(std::uint64_t a_seq, const RE::NiPoint3& a_feet, const RE::NiPoint3& a_direction,
+			float a_distance, std::uint32_t a_filter, float a_maxSlope, int a_maxSlopeDegrees, Debug::Snapshot& a_snapshot)
+		{
+			Landing plan;
+
+			// --- obstacle rays ------------------------------------------------------
+			// The distance is a maximum: whatever the rays find shortens the travel, it
+			// never turns a blink into a no-op. Only surfaces too steep to walk on count
+			// as obstacles, so a hill keeps the whole distance while a cliff blocks it.
+			BD("blink[{}] --- obstacle rays ({} heights, slope limit {}deg) ---", a_seq, std::size(kPathHeights), a_maxSlopeDegrees);
+			const float nearest = PathFraction(a_feet, a_direction, a_distance, a_filter, a_maxSlope, a_snapshot);
+			plan.blocked = nearest <= 1.0f;
+
+			float travel = a_distance;
+			if (plan.blocked) {
+				const float clear = a_distance * nearest;
+				if (clear < kDeadzone) {
+					BDI("blink[{}] REJECTED: obstacle is {:.1f} units away, inside the {:.0f} unit blink deadzone",
+						a_seq, clear, kDeadzone);
+					return plan;
+				}
+				travel = clear - kClearance;
+				a_snapshot.shortened = true;
+				BD("blink[{}] blocked at {:.1f} units, pulled back by clearance {:.0f} -> travelling {:.1f}",
+					a_seq, clear, kClearance, travel);
+			} else {
+				BD("blink[{}] path is clear, landing at the full distance", a_seq);
+			}
+
+			// Standing on something is what decides whether the landing height is taken
+			// from the ground: mid air the height is kept, so a blink during a jump keeps
+			// the jump instead of being dragged down to the floor.
+			const auto underFeet = ProbeGround(a_feet, a_filter, a_snapshot, "ground-here", kGroundProbeUp);
+			plan.grounded = underFeet.hit && std::abs(underFeet.delta) <= kGroundedTolerance;
+			BD("blink[{}] standing on ground={} (probe hit={} delta={:.1f})", a_seq, plan.grounded, underFeet.hit, underFeet.delta);
+			a_snapshot.grounded = plan.grounded;
+
+			const float slopeTan = std::tan(a_maxSlope * kRadiansPerDegree);
+			float landingZ = a_feet.z;
+			const char* heightSource = plan.grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
+
+			// --- landing: ground under it, then the body volume ---------------------
+			// The ground is probed first so the body fit runs at the height the player
+			// would really stand at: probing a slope at the old feet height would put the
+			// probes inside the hill and reject every landing on it.
+			RE::NiPoint3 landing{};
+			int pulls = 0;
+			for (;;) {
+				landing = a_feet + a_direction * travel;
+				landing.z = a_feet.z;
+
+				// A slope at the configured limit climbs this much over the blink, so the
+				// band the landing may climb scales with the distance; a fixed band would
+				// read a hill as a ledge.
+				const float climbBand = std::clamp(travel * slopeTan + kGroundLift, kMaxSnapUp, kMaxClimbFollow);
+				landingZ = a_feet.z;
+				heightSource = plan.grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
+				if (plan.grounded) {
+					auto ground = ProbeGround(landing, a_filter, a_snapshot, "ground", kGroundProbeUp);
+					if (!ground.hit) {
+						// Nothing within reach means the ground is either above the probe or
+						// a long way down. Only then look higher, so a bridge over flat
+						// ground - which the first probe finds from below - is never read as
+						// a hill to climb onto.
+						ground = ProbeGround(landing, a_filter, a_snapshot, "ground-high", kGroundProbeUp + climbBand);
+					}
+					a_snapshot.groundHit = ground.hit;
+					a_snapshot.groundSlopeDegrees = ground.slopeDegrees;
+					if (ground.hit && Walkable(ground.slopeDegrees, a_maxSlope) && ground.delta >= -kMaxSnapDown && ground.delta <= climbBand) {
+						landingZ = ground.point.z + kGroundLift;
+						const bool sloped = ground.slopeDegrees > 2.0f && std::abs(ground.delta) > 2.0f;
+						heightSource = sloped ? "followed the slope" : (std::abs(ground.delta) < 2.0f ? "ground snap (level)" : "ground snap");
+						a_snapshot.slopeFollowed = sloped;
+						BD("blink[{}] ground snap: delta {:.1f} units, surface {:.1f}deg (band {:.1f}), landing z {:.1f}",
+							a_seq, ground.delta, ground.slopeDegrees, climbBand, landingZ);
+					} else if (ground.hit && !Walkable(ground.slopeDegrees, a_maxSlope)) {
+						BDW("blink[{}] the ground under the landing is {:.1f}deg, too steep to stand on, staying at z {:.1f}",
+							a_seq, ground.slopeDegrees, a_feet.z);
+					} else if (ground.hit) {
+						BDW("blink[{}] ground is {:.1f} units away, too far to snap, staying at z {:.1f}", a_seq, ground.delta, a_feet.z);
+					} else {
+						BD("blink[{}] no ground under the landing spot, keeping the current height", a_seq);
+					}
+				} else {
+					BD("blink[{}] airborne, keeping the current height (no snap)", a_seq);
+				}
+				landing.z = landingZ;
+
+				const char* fitLabel = pulls == 0 ? "fit" : "fit-retry";
+				BD("blink[{}] fit check #{} at {} (travel {:.1f})", a_seq, pulls, Fmt(landing), travel);
+				if (BodyFits(landing, a_direction, a_filter, a_maxSlope, a_snapshot, fitLabel)) {
+					break;
+				}
+				if (pulls >= kMaxFitPulls || travel <= kMinTravel) {
+					BDI("blink[{}] REJECTED: no clear landing spot for the body (last try {:.0f} units out)", a_seq, travel);
+					return plan;
+				}
+				++pulls;
+				travel = (std::max)(travel - kFitStep, kMinTravel);
+				a_snapshot.shortened = true;
+				BDW("blink[{}] landing overlapped geometry, stepping back to {:.1f}", a_seq, travel);
+			}
+
+			const float travelled = (landing - a_feet).Length();
+			BD("blink[{}] travel from the feet = {:.1f} (minimum {:.1f})", a_seq, travelled, kMinTravel);
+			if (travelled < kMinTravel) {
+				BDI("blink[{}] REJECTED: only {:.1f} units of room (wedged against geometry)", a_seq, travelled);
+				return plan;
+			}
+			BD("blink[{}] landing point = {} ({})", a_seq, Fmt(landing), heightSource);
+
+			plan.ok = true;
+			plan.point = landing;
+			plan.travel = travel;
+			plan.travelled = travelled;
+			plan.pulls = pulls;
+			plan.heightSource = heightSource;
+			return plan;
+		}
+
+		// The velocity the character controller carries, which is what a jump and a dash are
+		// made of. Moving the player resets it, so it is read before the teleport and put back
+		// afterwards: blinking in mid air keeps going instead of stopping dead. Read and
+		// written as-is, same units and same source, so nothing here has to guess a scale.
+		struct Momentum
+		{
+			RE::bhkCharacterController* controller{ nullptr };
+			RE::hkVector4               velocity{};
+			bool                        viaGetter{ false };
+			bool                        have{ false };
+		};
+
+		Momentum CaptureMomentum(RE::PlayerCharacter* a_player, std::uint64_t a_seq)
+		{
+			Momentum momentum;
+			momentum.controller = a_player->GetCharController();
+			if (!momentum.controller) {
+				BDW("blink[{}] momentum: no character controller, the velocity cannot be kept", a_seq);
+				return momentum;
+			}
+
+			auto* controller = momentum.controller;
+			controller->GetLinearVelocityImpl(momentum.velocity);
+			momentum.viaGetter = momentum.velocity.Dot3(momentum.velocity) > 1e-6f;
+			if (!momentum.viaGetter) {
+				// Some controllers keep the integrated velocity in these instead.
+				if (controller->initialVelocity.Dot3(controller->initialVelocity) > 1e-6f) {
+					momentum.velocity = controller->initialVelocity;
+				} else if (controller->outVelocity.Dot3(controller->outVelocity) > 1e-6f) {
+					momentum.velocity = controller->outVelocity;
+				}
+			}
+			momentum.have = momentum.velocity.Dot3(momentum.velocity) > 1e-6f;
+			BD("blink[{}] momentum: controller 0x{:X} velocity {:.3f} (via getter={}, initial={:.3f}, out={:.3f})",
+				a_seq, reinterpret_cast<std::uintptr_t>(controller),
+				std::sqrt(momentum.velocity.Dot3(momentum.velocity)), momentum.viaGetter,
+				std::sqrt(controller->initialVelocity.Dot3(controller->initialVelocity)),
+				std::sqrt(controller->outVelocity.Dot3(controller->outVelocity)));
+			return momentum;
+		}
+
+		void RestoreMomentum(const Momentum& a_momentum, std::uint64_t a_seq)
+		{
+			if (!a_momentum.controller || !a_momentum.have) {
+				return;
+			}
+			if (a_momentum.viaGetter) {
+				a_momentum.controller->SetLinearVelocityImpl(a_momentum.velocity);
+			} else {
+				a_momentum.controller->initialVelocity = a_momentum.velocity;
+				a_momentum.controller->outVelocity = a_momentum.velocity;
+			}
+			RE::hkVector4 check{};
+			a_momentum.controller->GetLinearVelocityImpl(check);
+			BD("blink[{}] momentum: restored {:.3f} (now reads {:.3f})",
+				a_seq, std::sqrt(a_momentum.velocity.Dot3(a_momentum.velocity)), std::sqrt(check.Dot3(check)));
+		}
+
+		// Charges the cost after the teleport, so a rejected blink is free. The cost is a
+		// delta on the damage modifier, which is a signed offset on the current value. A
+		// negative delta is the vanilla drain, but a setup can store it and still hand points
+		// back (an inverted or rewritten actor value), which is a free heal - worse than no
+		// cost at all. So the delta is measured, not assumed: the direction is probed once per
+		// resource, remembered, and the modifier is logged next to the value so the log shows
+		// what the engine actually stored.
+		void PayCost(RE::PlayerCharacter* a_player, RE::ActorValueOwner* a_costOwner, std::uint64_t a_seq,
+			const Settings& a_settings, RE::ActorValue a_costValue, const char* a_costName)
+		{
+			// The configured cost is an integer; the actor value the engine hands back is not,
+			// so only this one conversion is left.
+			const float amount = static_cast<float>(a_settings.costAmount);
+			const float valueBefore = a_costOwner->GetActorValue(a_costValue);
+			const float modifierBefore = a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue);
+
+			// One write, reported as both the value the player sees and the modifier the engine
+			// stored: the two are what tells a real drain from a free heal.
+			struct Probe
+			{
+				float value{ 0.0f };
+				float modifier{ 0.0f };
+			};
+
+			auto spend = [&](float a_delta) {
+				a_costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue, a_delta);
+				return Probe{ a_costOwner->GetActorValue(a_costValue),
+					a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue) };
+			};
+
+			auto& sign = CostSignSlot(a_settings.costResource);
+			auto  learnedSign = sign.load(std::memory_order_acquire);
+			if (learnedSign == CostSign::kUnknown) {
+				const char* learned = "none";
+
+				// First paid blink on this setup: the direction of the delta is measured, not
+				// assumed. The guess is undone by exactly what the engine stored (the modifier
+				// is the tell, not the value), so each probe leaves the bar where it started
+				// and only the accepted one is a charge. The earlier version tried +2x after a
+				// failed -1x, which charged two costs on a value whose sign is inverted.
+				const float modifierBeforeGuess = a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue);
+				const auto  guess = spend(-amount);
+				const float guessStored = guess.modifier - modifierBeforeGuess;
+
+				if (guess.value < valueBefore - amount * 0.5f) {
+					learnedSign = CostSign::kNegative;
+					learned = "negative";
+				} else {
+					if (std::abs(guessStored) > 0.01f) {
+						spend(-guessStored);
+					}
+
+					const float modifierBeforeSecond = a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue);
+					const auto  second = spend(amount);
+					const float secondStored = second.modifier - modifierBeforeSecond;
+
+					if (second.value < valueBefore - amount * 0.5f) {
+						learnedSign = CostSign::kPositive;
+						learned = "positive";
+					} else {
+						// Neither direction drains: hand back what the probe stored and leave
+						// the blink free rather than charging on a guess.
+						if (std::abs(secondStored) > 0.01f) {
+							spend(-secondStored);
+						}
+						learnedSign = CostSign::kBlocked;
+					}
+				}
+				sign.store(learnedSign, std::memory_order_release);
+				BDI("blink[{}] cost: {} takes a {} delta on this setup, damage modifier {:.1f} -> {:.1f}",
+					a_seq, a_costName, learned, modifierBefore,
+					a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue));
+			} else if (learnedSign == CostSign::kNegative) {
+				spend(-amount);
+			} else if (learnedSign == CostSign::kPositive) {
+				spend(amount);
+			}
+
+			const float valueAfter = a_costOwner->GetActorValue(a_costValue);
+			const float modifierAfter = a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, a_costValue);
+			BD("blink[{}] cost: {} {:.1f} -> {:.1f} (cost {:.1f}, damage modifier {:.1f} -> {:.1f})",
+				a_seq, a_costName, valueBefore, valueAfter, amount, modifierBefore, modifierAfter);
+
+			if (learnedSign == CostSign::kBlocked) {
+				BDW("blink[{}] cost: this setup refuses the {} cost in both directions, so the blink stays free; another mod or a stuck effect is holding that actor value",
+					a_seq, a_costName);
+			} else if (valueAfter > valueBefore - 0.01f) {
+				BDW("blink[{}] cost: the {} cost did not land (value {:.1f} -> {:.1f}, damage modifier {:.1f} -> {:.1f})",
+					a_seq, a_costName, valueBefore, valueAfter, modifierBefore, modifierAfter);
+			}
+		}
+
 		bool ExecuteBlink(std::uint64_t a_seq, const char* a_source)
 		{
 			BD("blink[{}] ===== ExecuteBlink begin (source={}, thread={}) =====", a_seq, a_source, Log::ThreadId());
@@ -680,50 +1023,8 @@ namespace BlinkDash
 			const char* costName = settings.costResource == CostResource::kMagicka ? "magicka" : "stamina";
 
 			RE::ActorValueOwner* costOwner = nullptr;
-			const int            costAmount = settings.costAmount;
-
-			const bool inCombat = player->IsInCombat();
-			BD("blink[{}] in combat={} cost resource={} amount={} outsideCombat={}",
-				a_seq, inCombat, costName, costAmount, settings.costOutsideCombat);
-
-			if (costAmount <= 0) {
-				BD("blink[{}] cost: no cost configured, skipping the {} check", a_seq, costName);
-			} else if (!inCombat && !settings.costOutsideCombat) {
-				// Log the value as well: a report of "the bar went down out of combat" can
-				// then be checked against what the blink actually saw at that moment.
-				int current = -1;
-				if (auto* owner = player->AsActorValueOwner()) {
-					const auto vtable = *reinterpret_cast<const std::uintptr_t*>(owner);
-					if (vtable >= kMinPlausibleVtable) {
-						current = static_cast<int>(std::lround(owner->GetActorValue(costValue)));
-					}
-				}
-				BD("blink[{}] cost: out of combat, no {} charged ({} {}, untouched)", a_seq, costName, costName, current);
-			} else {
-				// NOTE: never call player->GetActorValue() / player->DamageActorValue()
-				// directly. Those use the ActorValueOwner base offset baked into the
-				// class layout (0x98 in this build), which does not match this runtime
-				// (0xB8 on 1.6.x) and crashed the game with a garbage vtable.
-				// AsActorValueOwner() is the runtime-versioned accessor and is correct.
-				BD("blink[{}] cost: calling player->AsActorValueOwner()", a_seq);
-				auto* owner = player->AsActorValueOwner();
-				const auto ownerAddress = reinterpret_cast<std::uintptr_t>(owner);
-				const auto vtable = owner ? *reinterpret_cast<const std::uintptr_t*>(owner) : 0;
-				BD("blink[{}] cost: owner=0x{:X} (player+0x{:X}) vtable=0x{:X}",
-					a_seq, ownerAddress, ownerAddress - reinterpret_cast<std::uintptr_t>(player), vtable);
-
-				if (owner == nullptr || vtable < kMinPlausibleVtable) {
-					BDE("blink[{}] cost: actor value owner looks wrong (vtable 0x{:X}), skipping the cost instead of crashing",
-						a_seq, vtable);
-				} else {
-					const int current = static_cast<int>(std::lround(owner->GetActorValue(costValue)));
-					BD("blink[{}] cost: current {}={} cost={}", a_seq, costName, current, costAmount);
-					if (current < costAmount) {
-						BDI("blink[{}] REJECTED: not enough {}", a_seq, costName);
-						return false;
-					}
-					costOwner = owner;  // spent after the teleport, so a rejected blink is free
-				}
+			if (!CheckCost(player, a_seq, settings, costValue, costName, costOwner)) {
+				return false;
 			}
 
 			const auto direction = ResolveDirection(player);
@@ -758,254 +1059,37 @@ namespace BlinkDash
 			const auto rayFilter = BuildRayFilter(rawFilter);
 			const int maxSlopeDegrees = std::clamp(settings.maxSlope, kMinSlopeDegrees, kMaxSlopeDegrees);
 			const float maxSlope = static_cast<float>(maxSlopeDegrees);
-			const float slopeTan = std::tan(maxSlope * kRadiansPerDegree);
 			const float fallDamageHeight = FallDamageHeight();
 
-			// --- obstacle rays ------------------------------------------------------
-			// The distance is a maximum: whatever the rays find shortens the travel, it
-			// never turns a blink into a no-op. Only surfaces too steep to walk on count
-			// as obstacles, so a hill keeps the whole distance while a cliff blocks it.
-			BD("blink[{}] --- obstacle rays ({} heights, slope limit {}deg) ---", a_seq, std::size(kPathHeights), maxSlopeDegrees);
-			const float nearest = PathFraction(feet, direction.dir, distance, rayFilter, maxSlope, snapshot);
-			const bool blocked = nearest <= 1.0f;
-
-			float travel = distance;
-			if (blocked) {
-				const float clear = distance * nearest;
-				if (clear < kDeadzone) {
-					BDI("blink[{}] REJECTED: obstacle is {:.1f} units away, inside the {:.0f} unit blink deadzone",
-						a_seq, clear, kDeadzone);
-					return false;
-				}
-				travel = clear - kClearance;
-				snapshot.shortened = true;
-				BD("blink[{}] blocked at {:.1f} units, pulled back by clearance {:.0f} -> travelling {:.1f}",
-					a_seq, clear, kClearance, travel);
-			} else {
-				BD("blink[{}] path is clear, landing at the full distance", a_seq);
-			}
-
-			// Standing on something is what decides whether the landing height is taken
-			// from the ground: mid air the height is kept, so a blink during a jump keeps
-			// the jump instead of being dragged down to the floor.
-			const auto underFeet = ProbeGround(feet, rayFilter, snapshot, "ground-here", kGroundProbeUp);
-			const bool grounded = underFeet.hit && std::abs(underFeet.delta) <= kGroundedTolerance;
-			BD("blink[{}] standing on ground={} (probe hit={} delta={:.1f})", a_seq, grounded, underFeet.hit, underFeet.delta);
-			snapshot.grounded = grounded;
-
-			float landingZ = feet.z;
-			const char* heightSource = grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
-
-			// --- landing: ground under it, then the body volume ---------------------
-			// The ground is probed first so the body fit runs at the height the player
-			// would really stand at: probing a slope at the old feet height would put the
-			// probes inside the hill and reject every landing on it.
-			RE::NiPoint3 landing{};
-			int pulls = 0;
-			for (;;) {
-				landing = feet + direction.dir * travel;
-				landing.z = feet.z;
-
-				// A slope at the configured limit climbs this much over the blink, so the
-				// band the landing may climb scales with the distance; a fixed band would
-				// read a hill as a ledge.
-				const float climbBand = std::clamp(travel * slopeTan + kGroundLift, kMaxSnapUp, kMaxClimbFollow);
-				landingZ = feet.z;
-				heightSource = grounded ? "kept height (no ground at the landing spot)" : "kept height (airborne)";
-				if (grounded) {
-					auto ground = ProbeGround(landing, rayFilter, snapshot, "ground", kGroundProbeUp);
-					if (!ground.hit) {
-						// Nothing within reach means the ground is either above the probe or
-						// a long way down. Only then look higher, so a bridge over flat
-						// ground - which the first probe finds from below - is never read as
-						// a hill to climb onto.
-						ground = ProbeGround(landing, rayFilter, snapshot, "ground-high", kGroundProbeUp + climbBand);
-					}
-					snapshot.groundHit = ground.hit;
-					snapshot.groundSlopeDegrees = ground.slopeDegrees;
-					if (ground.hit && Walkable(ground.slopeDegrees, maxSlope) && ground.delta >= -kMaxSnapDown && ground.delta <= climbBand) {
-						landingZ = ground.point.z + kGroundLift;
-						const bool sloped = ground.slopeDegrees > 2.0f && std::abs(ground.delta) > 2.0f;
-						heightSource = sloped ? "followed the slope" : (std::abs(ground.delta) < 2.0f ? "ground snap (level)" : "ground snap");
-						snapshot.slopeFollowed = sloped;
-						BD("blink[{}] ground snap: delta {:.1f} units, surface {:.1f}deg (band {:.1f}), landing z {:.1f}",
-							a_seq, ground.delta, ground.slopeDegrees, climbBand, landingZ);
-					} else if (ground.hit && !Walkable(ground.slopeDegrees, maxSlope)) {
-						BDW("blink[{}] the ground under the landing is {:.1f}deg, too steep to stand on, staying at z {:.1f}",
-							a_seq, ground.slopeDegrees, feet.z);
-					} else if (ground.hit) {
-						BDW("blink[{}] ground is {:.1f} units away, too far to snap, staying at z {:.1f}", a_seq, ground.delta, feet.z);
-					} else {
-						BD("blink[{}] no ground under the landing spot, keeping the current height", a_seq);
-					}
-				} else {
-					BD("blink[{}] airborne, keeping the current height (no snap)", a_seq);
-				}
-				landing.z = landingZ;
-
-				const char* fitLabel = pulls == 0 ? "fit" : "fit-retry";
-				BD("blink[{}] fit check #{} at {} (travel {:.1f})", a_seq, pulls, Fmt(landing), travel);
-				if (BodyFits(landing, direction.dir, rayFilter, maxSlope, snapshot, fitLabel)) {
-					break;
-				}
-				if (pulls >= kMaxFitPulls || travel <= kMinTravel) {
-					BDI("blink[{}] REJECTED: no clear landing spot for the body (last try {:.0f} units out)", a_seq, travel);
-					return false;
-				}
-				++pulls;
-				travel = (std::max)(travel - kFitStep, kMinTravel);
-				snapshot.shortened = true;
-				BDW("blink[{}] landing overlapped geometry, stepping back to {:.1f}", a_seq, travel);
-			}
-
-			const float travelled = (landing - feet).Length();
-			BD("blink[{}] travel from the feet = {:.1f} (minimum {:.1f})", a_seq, travelled, kMinTravel);
-			if (travelled < kMinTravel) {
-				BDI("blink[{}] REJECTED: only {:.1f} units of room (wedged against geometry)", a_seq, travelled);
+			// Obstacle rays, ground snap and the body fit live in PlanLanding; it writes what
+			// every probe found into the snapshot as it goes, so the debug view still shows
+			// the real geometry rather than a summary of it.
+			const auto landing = PlanLanding(a_seq, feet, direction.dir, distance, rayFilter, maxSlope, maxSlopeDegrees, snapshot);
+			if (!landing.ok) {
 				return false;
 			}
-			BD("blink[{}] landing point = {} ({})", a_seq, Fmt(landing), heightSource);
+			const float travel = landing.travel;
+			const int   pulls = landing.pulls;
+			const bool  blocked = landing.blocked;
+			const bool  grounded = landing.grounded;
+			const char* heightSource = landing.heightSource;
 
-			// Momentum: moving the player resets the velocity the character controller
-			// carries, and that velocity is what a jump and a dash are made of. Whatever it
-			// was before the teleport is put back afterwards, so blinking in mid air keeps
-			// going instead of stopping dead. Read and written as-is: same units, same
-			// source, so nothing here has to guess a scale.
-			auto*    controller = player->GetCharController();
-			RE::hkVector4 velocityBefore{};
-			bool     velocityViaGetter = false;
-			if (controller) {
-				controller->GetLinearVelocityImpl(velocityBefore);
-				velocityViaGetter = velocityBefore.Dot3(velocityBefore) > 1e-6f;
-				if (!velocityViaGetter) {
-					// Some controllers keep the integrated velocity in these instead.
-					if (controller->initialVelocity.Dot3(controller->initialVelocity) > 1e-6f) {
-						velocityBefore = controller->initialVelocity;
-					} else if (controller->outVelocity.Dot3(controller->outVelocity) > 1e-6f) {
-						velocityBefore = controller->outVelocity;
-					}
-				}
-				BD("blink[{}] momentum: controller 0x{:X} velocity {:.3f} (via getter={}, initial={:.3f}, out={:.3f})",
-					a_seq, reinterpret_cast<std::uintptr_t>(controller),
-					std::sqrt(velocityBefore.Dot3(velocityBefore)), velocityViaGetter,
-					std::sqrt(controller->initialVelocity.Dot3(controller->initialVelocity)),
-					std::sqrt(controller->outVelocity.Dot3(controller->outVelocity)));
-			} else {
-				BDW("blink[{}] momentum: no character controller, the velocity cannot be kept", a_seq);
-			}
-			const bool haveVelocity = velocityBefore.Dot3(velocityBefore) > 1e-6f;
-
-			player->SetPosition(landing, true);
-
-			if (controller && haveVelocity) {
-				if (velocityViaGetter) {
-					controller->SetLinearVelocityImpl(velocityBefore);
-				} else {
-					controller->initialVelocity = velocityBefore;
-					controller->outVelocity = velocityBefore;
-				}
-				RE::hkVector4 check{};
-				controller->GetLinearVelocityImpl(check);
-				BD("blink[{}] momentum: restored {:.3f} (now reads {:.3f})",
-					a_seq, std::sqrt(velocityBefore.Dot3(velocityBefore)), std::sqrt(check.Dot3(check)));
-			}
+			// Momentum is captured before the move and put back after it: see CaptureMomentum.
+			const auto momentum = CaptureMomentum(player, a_seq);
+			player->SetPosition(landing.point, true);
+			RestoreMomentum(momentum, a_seq);
 
 			// A blink is a discontinuity in the middle of a fall, so the engine's fall
 			// tracker is re-based on the landing: see RebaseFallTracker.
-			if (controller) {
-				RebaseFallTracker(controller, landing, fallDamageHeight, a_seq);
+			if (momentum.controller) {
+				RebaseFallTracker(momentum.controller, landing.point, fallDamageHeight, a_seq);
 			}
 
 			const RE::NiPoint3 after = player->GetPosition();
 			BD("blink[{}] position after the teleport = {} (delta {})", a_seq, Fmt(after), Fmt(after - feet));
 
 			if (costOwner) {
-				// The cost is a delta on the damage modifier, which is a signed offset on the
-				// current value. A negative delta is the vanilla drain, but a setup can store it
-				// and still hand points back (an inverted or rewritten actor value), which is a
-				// free heal - worse than no cost at all. So the delta is measured, not assumed:
-				// the direction is probed once per resource, remembered, and the modifier is
-				// logged next to the value so the log shows what the engine actually stored.
-				// The configured cost is an integer; the actor value the engine hands back is not,
-				// so only this one conversion is left.
-				const float amount = static_cast<float>(costAmount);
-				const float valueBefore = costOwner->GetActorValue(costValue);
-				const float modifierBefore = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
-
-				// One write, reported as both the value the player sees and the modifier the engine
-				// stored: the two are what tells a real drain from a free heal.
-				struct Probe
-				{
-					float value{ 0.0f };
-					float modifier{ 0.0f };
-				};
-
-				auto spend = [&](float a_delta) {
-					costOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue, a_delta);
-					return Probe{ costOwner->GetActorValue(costValue),
-						player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue) };
-				};
-
-				auto& sign = CostSignSlot(settings.costResource);
-				auto learnedSign = sign.load(std::memory_order_acquire);
-				if (learnedSign == CostSign::kUnknown) {
-					const char* learned = "none";
-
-					// First paid blink on this setup: the direction of the delta is measured, not
-					// assumed. The guess is undone by exactly what the engine stored (the modifier
-					// is the tell, not the value), so each probe leaves the bar where it started
-					// and only the accepted one is a charge. The earlier version tried +2x after a
-					// failed -1x, which charged two costs on a value whose sign is inverted.
-					const float modifierBeforeGuess = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
-					const auto  guess = spend(-amount);
-					const float guessStored = guess.modifier - modifierBeforeGuess;
-
-					if (guess.value < valueBefore - amount * 0.5f) {
-						learnedSign = CostSign::kNegative;
-						learned = "negative";
-					} else {
-						if (std::abs(guessStored) > 0.01f) {
-							spend(-guessStored);
-						}
-
-						const float modifierBeforeSecond = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
-						const auto  second = spend(amount);
-						const float secondStored = second.modifier - modifierBeforeSecond;
-
-						if (second.value < valueBefore - amount * 0.5f) {
-							learnedSign = CostSign::kPositive;
-							learned = "positive";
-						} else {
-							// Neither direction drains: hand back what the probe stored and leave
-							// the blink free rather than charging on a guess.
-							if (std::abs(secondStored) > 0.01f) {
-								spend(-secondStored);
-							}
-							learnedSign = CostSign::kBlocked;
-						}
-					}
-					sign.store(learnedSign, std::memory_order_release);
-					BDI("blink[{}] cost: {} takes a {} delta on this setup, damage modifier {:.1f} -> {:.1f}",
-						a_seq, costName, learned, modifierBefore,
-						player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue));
-				} else if (learnedSign == CostSign::kNegative) {
-					spend(-amount);
-				} else if (learnedSign == CostSign::kPositive) {
-					spend(amount);
-				}
-
-				const float valueAfter = costOwner->GetActorValue(costValue);
-				const float modifierAfter = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
-				BD("blink[{}] cost: {} {:.1f} -> {:.1f} (cost {:.1f}, damage modifier {:.1f} -> {:.1f})",
-					a_seq, costName, valueBefore, valueAfter, amount, modifierBefore, modifierAfter);
-
-				if (learnedSign == CostSign::kBlocked) {
-					BDW("blink[{}] cost: this setup refuses the {} cost in both directions, so the blink stays free; another mod or a stuck effect is holding that actor value",
-						a_seq, costName);
-				} else if (valueAfter > valueBefore - 0.01f) {
-					BDW("blink[{}] cost: the {} cost did not land (value {:.1f} -> {:.1f}, damage modifier {:.1f} -> {:.1f})",
-						a_seq, costName, valueBefore, valueAfter, modifierBefore, modifierAfter);
-				}
+				PayCost(player, costOwner, a_seq, settings, costValue, costName);
 			}
 
 			Effects::PlayOnPlayer("blink");
@@ -1014,12 +1098,12 @@ namespace BlinkDash
 
 			snapshot.feet = feet;
 			snapshot.direction = direction.dir;
-			snapshot.landing = landing;
+			snapshot.landing = landing.point;
 			snapshot.blocked = blocked;
 			snapshot.requested = distance;
 			snapshot.travel = travel;
 			snapshot.pulls = pulls;
-			snapshot.climb = landing.z - feet.z;
+			snapshot.climb = landing.point.z - feet.z;
 			snapshot.summary = std::format(
 				"blink #{}  {}  dir {}  source {}\nrequested {:.0f}  travel {:.0f}  blocked {}  pulls {}  height {}\nslope limit {:.0f}deg  landing surface {:.1f}deg  walked over {}  climb {:+.0f}",
 				a_seq, grounded ? "on ground" : "airborne", Fmt(direction.dir), direction.source,
@@ -1032,7 +1116,7 @@ namespace BlinkDash
 			Debug::Record(std::move(snapshot));
 
 			BDI("blink[{}] SUCCESS source={} direction={} travel={:.1f} blocked={} height={} from={} to={}",
-				a_seq, a_source, direction.source, travelled, blocked, heightSource, Fmt(feet), Fmt(after));
+				a_seq, a_source, direction.source, landing.travelled, blocked, heightSource, Fmt(feet), Fmt(after));
 			BD("blink[{}] ===== ExecuteBlink end =====", a_seq);
 			return true;
 		}
