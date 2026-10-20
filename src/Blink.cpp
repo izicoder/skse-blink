@@ -76,8 +76,12 @@ namespace BlinkDash
 		std::atomic<std::uint64_t> requestSeq{ 0 };
 		std::atomic<std::uint64_t> ignoreCount{ 0 };
 
-		// Clock of the last successful blink, for the cooldown.
-		std::atomic<float> lastBlinkClock{ -1.0e9f };
+		// Clock of the last successful blink, for the cooldown, plus whether that clock means
+		// anything yet. A sentinel value in the clock itself forced a clamp on every comparison
+		// (the difference from -1e9s does not fit an int) and only worked because nothing else
+		// moved the clock - a trap for whoever touched it next.
+		std::atomic<bool>  hasBlinked{ false };
+		std::atomic<float> lastBlinkClock{ 0.0f };
 
 		// How the cost has to be pushed into an actor value on this setup. Vanilla wants a
 		// negative damage-modifier delta to spend points, but a value that is rewritten or
@@ -656,13 +660,12 @@ namespace BlinkDash
 
 			// Cooldown: off unless configured, and only successful blinks count. Both sides of
 			// the comparison are whole milliseconds, so a 1000ms cooldown means exactly that.
-			if (settings.cooldownMs > 0) {
-				// "Never blinked yet" is a clock of -1e9s, so the raw difference is far outside
-				// integer range: clamp it before converting. Without the clamp the cast wraps to
-				// a small ("looks recent") number and the cooldown rejects every blink for the
-				// whole session, because only a successful blink moves the clock.
+			if (settings.cooldownMs > 0 && hasBlinked.load(std::memory_order_acquire)) {
+				// Both clocks come from the same monotonic source and this one is always at or
+				// after the stored one, but the conversion to int is still clamped: a float to
+				// int cast outside the int range is undefined behaviour.
 				const double sinceRaw = static_cast<double>(now - lastBlinkClock.load(std::memory_order_acquire)) * 1000.0;
-				const int    sinceMs = static_cast<int>((std::clamp)(sinceRaw, -1.0e6, 1.0e6));
+				const int    sinceMs = static_cast<int>(std::clamp(sinceRaw, 0.0, 1.0e9));
 				if (sinceMs < settings.cooldownMs) {
 					BDI("blink[{}] REJECTED: cooldown, {}ms since the last blink of {}ms",
 						a_seq, sinceMs, settings.cooldownMs);
@@ -948,20 +951,37 @@ namespace BlinkDash
 				auto learnedSign = sign.load(std::memory_order_acquire);
 				if (learnedSign == CostSign::kUnknown) {
 					const char* learned = "none";
-					if (spend(-amount).value < valueBefore - amount * 0.5f) {
+
+					// First paid blink on this setup: the direction of the delta is measured, not
+					// assumed. The guess is undone by exactly what the engine stored (the modifier
+					// is the tell, not the value), so each probe leaves the bar where it started
+					// and only the accepted one is a charge. The earlier version tried +2x after a
+					// failed -1x, which charged two costs on a value whose sign is inverted.
+					const float modifierBeforeGuess = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
+					const auto  guess = spend(-amount);
+					const float guessStored = guess.modifier - modifierBeforeGuess;
+
+					if (guess.value < valueBefore - amount * 0.5f) {
 						learnedSign = CostSign::kNegative;
 						learned = "negative";
 					} else {
-						// Undo whatever the first attempt stored and go one cost past it the other way:
-						// on a value whose sign is inverted, that is the direction that drains.
-						const auto probe = spend(amount * 2.0f);
-						if (probe.value < valueBefore - amount * 0.5f) {
+						if (std::abs(guessStored) > 0.01f) {
+							spend(-guessStored);
+						}
+
+						const float modifierBeforeSecond = player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, costValue);
+						const auto  second = spend(amount);
+						const float secondStored = second.modifier - modifierBeforeSecond;
+
+						if (second.value < valueBefore - amount * 0.5f) {
 							learnedSign = CostSign::kPositive;
 							learned = "positive";
 						} else {
-							// Neither direction takes points. Restore by the offset that was actually
-							// stored (not an assumed one), so the probe leaves the value untouched.
-							spend(modifierBefore - probe.modifier);
+							// Neither direction drains: hand back what the probe stored and leave
+							// the blink free rather than charging on a guess.
+							if (std::abs(secondStored) > 0.01f) {
+								spend(-secondStored);
+							}
 							learnedSign = CostSign::kBlocked;
 						}
 					}
@@ -991,6 +1011,7 @@ namespace BlinkDash
 
 			Effects::PlayOnPlayer("blink");
 			lastBlinkClock.store(now, std::memory_order_release);
+			hasBlinked.store(true, std::memory_order_release);
 
 			snapshot.feet = feet;
 			snapshot.direction = direction.dir;
