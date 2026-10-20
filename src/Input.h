@@ -96,22 +96,48 @@ namespace BlinkDash::Input
 
 		// The left stick, straight off the thumbstick events, which is the same kind of
 		// raw state as the keys above and wants no translation through the engine.
-		inline std::atomic<float> s_stickX{ 0.0f };
-		inline std::atomic<float> s_stickY{ 0.0f };
-		inline std::atomic<bool>  s_stickSeen{ false };
+		inline std::atomic<float>        s_stickX{ 0.0f };
+		inline std::atomic<float>        s_stickY{ 0.0f };
+		inline std::atomic<bool>         s_stickSeen{ false };
+		inline std::atomic<std::int64_t> s_stickTicks{ 0 };
+		inline std::atomic<bool>         s_stickStaleLogged{ false };
 
 		inline void SetStick(float a_x, float a_y)
 		{
 			s_stickX.store(a_x, std::memory_order_relaxed);
 			s_stickY.store(a_y, std::memory_order_relaxed);
+			s_stickTicks.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
 			s_stickSeen.store(true, std::memory_order_relaxed);
+			s_stickStaleLogged.store(false, std::memory_order_relaxed);
 		}
 
+		// A stick that stopped reporting is not a stick that is still pushed: an unplugged
+		// controller leaves the last vector behind forever, and the stick outranks the keyboard.
+		// Events arrive continuously while a pad is connected, so two seconds of silence is not
+		// a held stick.
 		inline bool StickSeen()
 		{
-			return s_stickSeen.load(std::memory_order_relaxed);
+			if (!s_stickSeen.load(std::memory_order_relaxed)) {
+				return false;
+			}
+			const auto ticks = s_stickTicks.load(std::memory_order_relaxed);
+			if (ticks == 0) {
+				return false;
+			}
+			const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+			const auto age = std::chrono::steady_clock::duration{ now - ticks };
+			if (age <= std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(2))) {
+				return true;
+			}
+			if (!s_stickStaleLogged.exchange(true, std::memory_order_relaxed)) {
+				BDW("input: no thumbstick event for 2s, dropping the stick (was the controller unplugged?)");
+			}
+			return false;
 		}
 
+		// Drops every held button and the stick. Called when the game stops sending releases -
+		// a menu opening, a save loading - because a key that was down at that moment never gets
+		// its release event and would otherwise stay "held" for the rest of the session.
 		inline void Clear()
 		{
 			for (auto& word : s_held) {
@@ -119,6 +145,10 @@ namespace BlinkDash::Input
 			}
 			s_stickX.store(0.0f, std::memory_order_relaxed);
 			s_stickY.store(0.0f, std::memory_order_relaxed);
+			s_stickSeen.store(false, std::memory_order_relaxed);
+			s_stickTicks.store(0, std::memory_order_relaxed);
+			s_stickStaleLogged.store(false, std::memory_order_relaxed);
+			BD("input: held state cleared");
 		}
 	}
 
@@ -281,6 +311,31 @@ namespace BlinkDash::Input
 		std::atomic<std::uint64_t> longHoldCount{ 0 };
 	};
 
+	// The game keeps dispatching input while a menu is up, but a key that was already down when
+	// the menu opened never gets its release: the menu eats it. Clearing on open means every
+	// blink after a menu starts from "nothing held" instead of drifting in a stale direction.
+	class MenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+	{
+	public:
+		static MenuSink* GetSingleton()
+		{
+			static MenuSink singleton;
+			return &singleton;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+		{
+			if (!a_event) {
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			if (a_event->opening) {
+				BD("input: menu '{}' opened, dropping the held state", a_event->menuName.c_str());
+				State::Clear();
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
 	inline void Register()
 	{
 		BDI("input: Register() begin");
@@ -290,6 +345,17 @@ namespace BlinkDash::Input
 			BDI("input: event sink registered (tap to blink, retrigger delay applies)");
 		} else {
 			BDE("input: BSInputDeviceManager singleton is null, the hotkey will not work");
+		}
+
+		if (auto* ui = RE::UI::GetSingleton()) {
+			if (auto* source = ui->GetEventSource<RE::MenuOpenCloseEvent>()) {
+				source->AddEventSink(MenuSink::GetSingleton());
+				BDI("input: menu sink registered (held state is dropped when a menu opens)");
+			} else {
+				BDW("input: no menu event source, held state survives menus");
+			}
+		} else {
+			BDW("input: no UI singleton, held state survives menus");
 		}
 	}
 }

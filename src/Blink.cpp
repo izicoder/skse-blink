@@ -342,17 +342,23 @@ namespace BlinkDash
 
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (!player) {
-				BDE("  ray[{}]: no player singleton, treating the path as clear", a_label);
-				result.point = a_to;
+				// Never report a clear path that was not actually tested: a hit at the origin
+				// shortens the blink to nothing, which is the safe failure.
+				BDE("  ray[{}]: no player singleton, treating the path as blocked", a_label);
+				result.hit = true;
+				result.fraction = 0.0f;
+				result.point = a_from;
 				return result;
 			}
 
 			auto* cell = player->GetParentCell();
 			RE::bhkWorld* world = cell ? cell->GetbhkWorld() : nullptr;
 			if (!world) {
-				BDW("  ray[{}]: no havok world for this cell (0x{:X}), treating the path as clear",
+				BDW("  ray[{}]: no havok world for this cell (0x{:X}), treating the path as blocked",
 					a_label, reinterpret_cast<std::uintptr_t>(cell));
-				result.point = a_to;
+				result.hit = true;
+				result.fraction = 0.0f;
+				result.point = a_from;
 				return result;
 			}
 
@@ -615,7 +621,7 @@ namespace BlinkDash
 		{
 			BD("blink[{}] ===== ExecuteBlink begin (source={}, thread={}) =====", a_seq, a_source, Log::ThreadId());
 
-			const auto& settings = Config::Get();
+			const auto settings = Config::Snapshot();
 			BD("blink[{}] settings: {}", a_seq, Config::Describe());
 
 			Debug::Snapshot snapshot;
@@ -629,6 +635,20 @@ namespace BlinkDash
 			if (!player) {
 				BDE("blink[{}] player became null after the gate checks", a_seq);
 				return false;
+			}
+
+			// Every ray below needs the cell's havok world. Without one the picks are
+			// meaningless, and treating them as clear would teleport through the whole cell;
+			// this is the one case where refusing to blink is the only safe answer.
+			{
+				auto* cell = player->GetParentCell();
+				auto* world = cell ? cell->GetbhkWorld() : nullptr;
+				BD("blink[{}] cell=0x{:X} havok world=0x{:X}", a_seq,
+					reinterpret_cast<std::uintptr_t>(cell), reinterpret_cast<std::uintptr_t>(world));
+				if (!world) {
+					BDI("blink[{}] REJECTED: this cell has no havok world, the collision rays cannot be cast", a_seq);
+					return false;
+				}
 			}
 
 			const float now = Now();

@@ -2,6 +2,7 @@
 #include "Version.h"
 #include "Blink.h"
 #include "Config.h"
+#include "Debug.h"
 #include "Effects.h"
 #include "Input.h"
 #include "Log.h"
@@ -77,7 +78,8 @@ namespace
 					} else {
 						BD("msg: menu was already registered, not registering twice");
 					}
-					BDI("msg: kDataLoaded complete, BlinkDash v{} is live", BLINKDASH_VERSION);
+					BDI("msg: kDataLoaded complete, BlinkDash v{} is live ({} effect shaders, {} perks in this load order)",
+						BLINKDASH_VERSION, BlinkDash::Effects::Entries().size(), BlinkDash::Perks::Entries().size());
 				}
 				break;
 			case SKSE::MessagingInterface::kPostLoad:
@@ -94,9 +96,14 @@ namespace
 				break;
 			case SKSE::MessagingInterface::kPreLoadGame:
 				BD("msg: kPreLoadGame - a save is about to load");
+				// Nothing held now will get a release event across the load, and the last
+				// blink's geometry belongs to the save that is being left behind.
+				BlinkDash::Input::State::Clear();
+				BlinkDash::Debug::Clear();
 				break;
 			case SKSE::MessagingInterface::kPostLoadGame:
 				BD("msg: kPostLoadGame - a save finished loading");
+				BlinkDash::Input::State::Clear();
 				break;
 			case SKSE::MessagingInterface::kSaveGame:
 				BD("msg: kSaveGame - the game is saving");
@@ -120,6 +127,12 @@ namespace
 
 extern "C" DLLEXPORT bool SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
+	// Checked before SKSE::Init: the library dereferences the interface, so a null one would
+	// crash before the plugin could say a word about it.
+	if (!a_skse) {
+		return false;
+	}
+
 	SKSE::Init(a_skse);
 
 	// From here on every single line lands in SKSE/BlinkDash.log and is flushed.
@@ -127,10 +140,6 @@ extern "C" DLLEXPORT bool SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 
 	BDI("=== SKSEPlugin_Load begin ===");
 	BD("load interface pointer = 0x{:X}", reinterpret_cast<std::uintptr_t>(a_skse));
-	if (!a_skse) {
-		BDE("load interface is null, refusing to continue");
-		return false;
-	}
 
 	BlinkDash::Log::Banner();
 

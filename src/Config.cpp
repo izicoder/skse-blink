@@ -6,6 +6,11 @@ namespace BlinkDash
 {
 	namespace
 	{
+		// Guards the settings against the two threads that touch them. Recursive because Load
+		// and Save call Validate and Describe, which take it as well; the lock is only held for
+		// a copy or a few assignments, so recursion is cheaper than splitting the API.
+		std::recursive_mutex s_lock;
+
 		// Distance bounds are the menu slider bounds, which are also Blink.cpp's
 		// kMaxDistanceCap: anything outside is silently capped at blink time, so it is
 		// reported and clamped here instead. Every tunable is an integer: the menu sliders
@@ -59,6 +64,11 @@ namespace BlinkDash
 		// Options read from the file that this build does not know. They are merged back on save.
 		nlohmann::json s_unknown{ nlohmann::json::object() };
 
+		// Format version of the file that was read. Saving stamps the higher of this and
+		// kSettingsFormatVersion: a file from a newer build must never be rewritten as an older
+		// format, or the next build would run its migrations over data that already has them.
+		int s_fileVersion = kSettingsFormatVersion;
+
 		// The resource is stored as a string: a hand-edited JSON stays readable, and an
 		// unknown value can be reported instead of silently turning into stamina.
 		std::string CostKey(CostResource a_resource)
@@ -107,6 +117,36 @@ namespace BlinkDash
 				return std::nullopt;
 			}
 			return static_cast<int>(std::lround((std::clamp)(value, -1.0e6, 1.0e6) * 1000.0));
+		}
+
+		// Typed readers for the non-numeric keys. They exist because json::get<T>() throws on a
+		// type mismatch, and the load applies every key inside one try: a single hand-edited
+		// value ("hotkey": "mouse4", "logging": "yes") used to abandon every key after it and
+		// leave a half-applied config behind. A wrong type now costs that one key, nothing more.
+		std::optional<bool> ReadBool(const nlohmann::json& a_json, const char* a_key)
+		{
+			if (!a_json.contains(a_key)) {
+				return std::nullopt;
+			}
+			const auto& value = a_json.at(a_key);
+			if (!value.is_boolean()) {
+				BDW("config: '{}' is {}, expected true or false, keeping the default", a_key, value.type_name());
+				return std::nullopt;
+			}
+			return value.get<bool>();
+		}
+
+		std::optional<std::string> ReadString(const nlohmann::json& a_json, const char* a_key)
+		{
+			if (!a_json.contains(a_key)) {
+				return std::nullopt;
+			}
+			const auto& value = a_json.at(a_key);
+			if (!value.is_string()) {
+				BDW("config: '{}' is {}, expected a string, keeping the default", a_key, value.type_name());
+				return std::nullopt;
+			}
+			return value.get<std::string>();
 		}
 
 		// Migration 1 -> 2 (any 1.0.x / 1.1.x file): the cost was a single float amount called
@@ -170,7 +210,7 @@ namespace BlinkDash
 				{ "debugOverlay", a_settings.debugOverlay },
 				{ "logging", a_settings.logging },
 			});
-			json["version"] = kSettingsFormatVersion;  // ...and stamp the format we wrote
+			json["version"] = s_fileVersion;  // ...and stamp the format we wrote (never lower than what we read)
 			return json;
 		}
 	}
@@ -181,8 +221,33 @@ namespace BlinkDash
 		return settings;
 	}
 
+	Settings Config::Snapshot()
+	{
+		std::scoped_lock lock{ s_lock };
+		return Get();
+	}
+
+	void Config::SetEffectShader(std::string a_value)
+	{
+		std::scoped_lock lock{ s_lock };
+		Get().effectShader = std::move(a_value);
+	}
+
+	void Config::SetRequiredPerk(std::string a_value)
+	{
+		std::scoped_lock lock{ s_lock };
+		Get().requiredPerk = std::move(a_value);
+	}
+
+	void Config::ResetToDefaults()
+	{
+		std::scoped_lock lock{ s_lock };
+		Get() = Settings{};
+	}
+
 	std::string Config::Describe()
 	{
+		std::scoped_lock lock{ s_lock };
 		const auto& s = Get();
 		return std::format(
 			"hotkey=0x{:X} distance={} cost={} {} outsideCombat={} retrigger={}ms cooldown={}ms maxSlope={}deg effectShader='{}' requiredPerk='{}' debugOverlay={} logging={}",
@@ -200,11 +265,14 @@ namespace BlinkDash
 
 	bool Config::Validate()
 	{
+		std::scoped_lock lock{ s_lock };
 		auto& s = Get();
 		bool changed = false;
 
-		if (s.hotkey == 0) {
-			BDW("config: hotkey 0 is not bindable, restoring default 0x103 (mouse button 4)");
+		// Encoded hotkeys are a scancode, 0x100|mouse button or 0x1000|gamepad index; nothing
+		// legal reaches 0x10000, so anything above it is a corrupt or hand-typed value.
+		if (s.hotkey == 0 || s.hotkey > 0xFFFF) {
+			BDW("config: hotkey 0x{:X} is not bindable, restoring default 0x103 (mouse button 4)", s.hotkey);
 			s.hotkey = 0x103;
 			changed = true;
 		}
@@ -252,6 +320,7 @@ namespace BlinkDash
 
 	void Config::Load()
 	{
+		std::scoped_lock lock{ s_lock };
 		BDI("config: Load() begin, path = {}", Path().string());
 
 		const auto path = Path();
@@ -300,6 +369,10 @@ namespace BlinkDash
 			} else {
 				Migrate(json, fileVersion);
 			}
+			// Never stamp a newer file down: the UI saves on every menu close, so a downgrade
+			// plus one menu visit used to rewrite a v3 file as v2, and the next upgrade then
+			// migrated data that was already migrated.
+			s_fileVersion = (std::max)(fileVersion, kSettingsFormatVersion);
 
 			// Everything this build knows is logged and applied below; anything else is kept
 			// aside so saving does not silently drop an option from another build.
@@ -313,8 +386,10 @@ namespace BlinkDash
 				}
 			}
 
-			if (json.contains("hotkey")) {
-				s.hotkey = json.at("hotkey").get<std::uint32_t>();
+			if (const auto value = ReadInt(json, "hotkey")) {
+				// Validate() rejects anything outside the encodable range, so a negative or
+				// absurd number cannot survive as a hotkey that nothing can ever press.
+				s.hotkey = static_cast<std::uint32_t>(*value);
 			}
 			if (const auto value = ReadInt(json, "distance")) {
 				s.distance = *value;
@@ -328,16 +403,15 @@ namespace BlinkDash
 				s.costAmount = *legacy;
 				BDW("config: legacy key 'staminaCost' = {} read as costAmount", s.costAmount);
 			}
-			if (json.contains("costResource")) {
-				const auto key = json.at("costResource").get<std::string>();
-				if (const auto parsed = CostFromKey(key)) {
+			if (const auto key = ReadString(json, "costResource")) {
+				if (const auto parsed = CostFromKey(*key)) {
 					s.costResource = *parsed;
 				} else {
-					BDW("config: unknown costResource '{}', keeping '{}'", key, CostKey(s.costResource));
+					BDW("config: unknown costResource '{}', keeping '{}'", *key, CostKey(s.costResource));
 				}
 			}
-			if (json.contains("costOutsideCombat")) {
-				s.costOutsideCombat = json.at("costOutsideCombat").get<bool>();
+			if (const auto value = ReadBool(json, "costOutsideCombat")) {
+				s.costOutsideCombat = *value;
 			}
 			if (const auto value = ReadInt(json, "retriggerMs")) {
 				s.retriggerMs = *value;
@@ -356,17 +430,17 @@ namespace BlinkDash
 			if (const auto value = ReadInt(json, "maxSlope")) {
 				s.maxSlope = *value;
 			}
-			if (json.contains("effectShader")) {
-				s.effectShader = json.at("effectShader").get<std::string>();
+			if (const auto value = ReadString(json, "effectShader")) {
+				s.effectShader = *value;
 			}
-			if (json.contains("requiredPerk")) {
-				s.requiredPerk = json.at("requiredPerk").get<std::string>();
+			if (const auto value = ReadString(json, "requiredPerk")) {
+				s.requiredPerk = *value;
 			}
-			if (json.contains("debugOverlay")) {
-				s.debugOverlay = json.at("debugOverlay").get<bool>();
+			if (const auto value = ReadBool(json, "debugOverlay")) {
+				s.debugOverlay = *value;
 			}
-			if (json.contains("logging")) {
-				s.logging = json.at("logging").get<bool>();
+			if (const auto value = ReadBool(json, "logging")) {
+				s.logging = *value;
 			}
 
 			const bool corrected = Validate();
@@ -392,6 +466,7 @@ namespace BlinkDash
 
 	void Config::Save()
 	{
+		std::scoped_lock lock{ s_lock };
 		BDI("config: Save() begin");
 
 		const auto path = Path();
@@ -405,15 +480,35 @@ namespace BlinkDash
 		BD("config: saving values: {}", Describe());
 		BD("config: json payload: {}", payload);
 
+		// Written to a sibling file and moved over the real one. Truncating the live file
+		// first means a crash or a power loss mid-write leaves invalid JSON, which Load cannot
+		// parse - the user then silently runs on defaults, and the file is never rewritten.
+		auto temp = path;
+		temp += L".tmp";
+
 		try {
-			std::ofstream file{ path, std::ios::binary | std::ios::trunc };
-			if (!file) {
-				BDE("config: could not open the file for writing");
+			{
+				std::ofstream file{ temp, std::ios::binary | std::ios::trunc };
+				if (!file) {
+					BDE("config: could not open '{}' for writing", temp.string());
+					return;
+				}
+				file << payload;
+				file.flush();
+				if (!file.good()) {
+					BDE("config: writing '{}' failed, the old config is untouched", temp.string());
+					return;
+				}
+			}  // closed before the move: Windows will not replace an open file
+
+			// MoveFileExW replaces the destination atomically on NTFS; std::filesystem::rename
+			// is allowed to refuse an existing target on Windows, so it is not used here.
+			if (!::MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+				BDE("config: could not replace '{}' (error {}), the old config is untouched",
+					path.string(), ::GetLastError());
 				return;
 			}
-			file << payload;
-			file.flush();
-			BD("config: wrote {} bytes, stream good={}", payload.size(), file.good());
+			BD("config: wrote {} bytes, stream good={}", payload.size(), true);
 			BDI("config: saved to {}", path.string());
 		} catch (const std::exception& e) {
 			BDE("config: write threw: {}", e.what());

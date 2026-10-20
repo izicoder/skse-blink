@@ -99,6 +99,10 @@ namespace BlinkDash::Log
 		BDI("======================================================================");
 		BDI("BlinkDash log level forced to TRACE, flushing after every line");
 		BDI("plugin version   : {}", BLINKDASH_VERSION);
+		// The runtime is the first thing a bug report needs and the last thing a user thinks
+		// to mention, so every log starts with it.
+		const char* runtime = REL::Module::IsVR() ? "VR" : (REL::Module::IsAE() ? "AE" : "SE");
+		BDI("skyrim runtime   : {} {} (address library build)", runtime, REL::Module::get().version().string("."));
 		BDI("dll path         : {}", ModulePath());
 		BDI("process id       : {}", ::GetCurrentProcessId());
 		BDI("thread id        : {}", ThreadId());

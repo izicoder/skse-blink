@@ -209,7 +209,8 @@ namespace BlinkDash::Effects
 
 	void RefreshSelection()
 	{
-		const auto& want = Config::Get().effectShader;
+		const auto settings = Config::Snapshot();
+		const auto& want = settings.effectShader;
 
 		if (want.empty() || want == "None") {
 			s_selectedIndex.store(kNoSelection, std::memory_order_release);

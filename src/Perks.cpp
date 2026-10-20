@@ -17,7 +17,8 @@ namespace BlinkDash::Perks
 			// The config string is the truth and the index is derived state. If the two ever
 			// disagree (a settings reset that replaced every field, a hand-edited file), resolve
 			// again instead of gating the blink on a perk that is no longer configured.
-			const auto& want = Config::Get().requiredPerk;
+			const auto settings = Config::Snapshot();
+			const auto& want = settings.requiredPerk;
 			const bool none = want.empty() || want == kNoneKey;
 
 			const auto index = s_selectedIndex.load(std::memory_order_acquire);
@@ -242,7 +243,8 @@ namespace BlinkDash::Perks
 
 	void RefreshSelection()
 	{
-		const auto& want = Config::Get().requiredPerk;
+		const auto settings = Config::Snapshot();
+		const auto& want = settings.requiredPerk;
 
 		if (want.empty() || want == kNoneKey) {
 			s_selectedIndex.store((std::numeric_limits<std::size_t>::max)(), std::memory_order_release);

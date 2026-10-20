@@ -237,7 +237,7 @@ namespace BlinkDash::UI
 			int current = CurrentEffectIndex();
 			ImGui::SetNextItemWidth(a_itemWidth);
 			if (ImGui::Combo("Effect shader on blink", &current, labelPtrs.data(), static_cast<int>(labelPtrs.size()))) {
-				a_settings.effectShader = (current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key();
+				Config::SetEffectShader((current <= 0) ? std::string{ "None" } : Effects::Entries()[static_cast<std::size_t>(current) - 1].Key());
 				BDI("ui: effect shader changed -> '{}'", a_settings.effectShader);
 				Effects::RefreshSelection();
 				SaveNow("effect shader changed");
@@ -271,7 +271,7 @@ namespace BlinkDash::UI
 					// Reset everything the menu owns, not just the config block: the
 					// hotkey capture and the resolved effect shader are separate state
 					// and would otherwise keep the old selection alive.
-					a_settings = Settings{};
+					Config::ResetToDefaults();
 					if (capturing.exchange(false)) {
 						SKSEMenuFramework::SetHotkeyEnabled(true);
 						BD("ui: Reset defaults cancelled the active hotkey capture");
@@ -312,7 +312,7 @@ namespace BlinkDash::UI
 			int current = CurrentPerkIndex();
 			ImGui::SetNextItemWidth(a_itemWidth);
 			if (ImGui::Combo("Required perk (blink only with it)", &current, perkLabelPtrs.data(), static_cast<int>(perkLabelPtrs.size()))) {
-				a_settings.requiredPerk = (current <= 0) ? std::string{ "None" } : Perks::Entries()[static_cast<std::size_t>(current) - 1].Key();
+				Config::SetRequiredPerk((current <= 0) ? std::string{ "None" } : Perks::Entries()[static_cast<std::size_t>(current) - 1].Key());
 				BDI("ui: required perk changed -> '{}'", a_settings.requiredPerk);
 				Perks::RefreshSelection();
 				SaveNow("required perk changed");

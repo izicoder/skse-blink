@@ -31,7 +31,22 @@ namespace BlinkDash
 	class Config
 	{
 	public:
+		// The live settings object. The menu edits it in place from the render thread, so a
+		// field-by-field read of this from the game thread is not safe for the string fields;
+		// use Snapshot() for anything that reads across threads.
 		static Settings& Get();
+
+		// A copy taken under the settings lock. That is what the game thread reads: the menu
+		// reassigns effectShader/requiredPerk while a blink can be running, and a plain read of
+		// a std::string being reassigned is a use-after-free waiting to happen.
+		static Settings Snapshot();
+
+		// The two string settings are written through locked setters for the same reason.
+		static void SetEffectShader(std::string a_value);
+		static void SetRequiredPerk(std::string a_value);
+
+		// Replaces every field with its default, under the lock.
+		static void ResetToDefaults();
 
 		// Human readable dump of every field, used by the logging.
 		static std::string Describe();
