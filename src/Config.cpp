@@ -502,7 +502,7 @@ namespace BlinkDash
 					path.string(), ::GetLastError());
 				return;
 			}
-			BD("config: wrote {} bytes, stream good={}", payload.size(), true);
+			BD("config: wrote {} bytes", payload.size());
 			BDI("config: saved to {}", path.string());
 		} catch (const std::exception& e) {
 			BDE("config: write threw: {}", e.what());
