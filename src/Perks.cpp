@@ -9,8 +9,9 @@ namespace BlinkDash::Perks
 	{
 		constexpr const char* kNoneKey = "None";
 
-		std::vector<Entry>       s_entries;
-		std::atomic<std::size_t> s_selectedIndex{ (std::numeric_limits<std::size_t>::max)() };
+		Forms::List<Entry> s_list;
+		std::vector<Entry>& s_entries = s_list.Mutable();
+		std::atomic<std::size_t> s_selectedIndex{ Forms::kNoSelection };
 
 		const Entry* Selected()
 		{
@@ -35,40 +36,6 @@ namespace BlinkDash::Perks
 			return &s_entries[index];
 		}
 
-		std::size_t IndexOf(const Entry* a_entry)
-		{
-			if (!a_entry) {
-				return (std::numeric_limits<std::size_t>::max)();
-			}
-			return static_cast<std::size_t>(a_entry - s_entries.data());
-		}
-
-		std::string ToLower(std::string_view a_text)
-		{
-			std::string out{ a_text };
-			for (auto& c : out) {
-				if (c >= 'A' && c <= 'Z') {
-					c = static_cast<char>(c - 'A' + 'a');
-				}
-			}
-			return out;
-		}
-
-		std::string SourceName(RE::TESForm* a_form)
-		{
-			if (auto* file = a_form ? a_form->GetFile(0) : nullptr) {
-				return std::string{ file->GetFilename() };
-			}
-			return "<unknown>";
-		}
-
-		// Light plugins (ESL / ESP with the light flag) use a 12 bit form id, normal
-		// ones 24 bit. Same layout as the effect shader keys.
-		std::uint32_t LocalID(RE::FormID a_runtimeFormID)
-		{
-			return (a_runtimeFormID >> 24) == 0xFE ? (a_runtimeFormID & 0xFFF) : (a_runtimeFormID & 0xFFFFFF);
-		}
-
 		// The perk's in-game name. TESFullName lives on BGSPerk itself; fall back to
 		// the editor id when the record has no name, so the dropdown never shows blanks.
 		std::string DisplayName(RE::BGSPerk* a_perk)
@@ -83,19 +50,6 @@ namespace BlinkDash::Perks
 				return std::string{ name };
 			}
 			return std::string{ a_perk->GetFormEditorID() };
-		}
-
-		const Entry* FindByKey(std::string_view a_key)
-		{
-			if (a_key.empty()) {
-				return nullptr;
-			}
-			for (const auto& entry : s_entries) {
-				if (entry.Key() == a_key) {
-					return &entry;
-				}
-			}
-			return nullptr;
 		}
 
 		Entry* FindByPerk(RE::BGSPerk* a_perk)
@@ -148,38 +102,6 @@ namespace BlinkDash::Perks
 			}
 		}
 
-		bool EqualsIgnoreCasePlugin(std::string_view a_lhs, std::string_view a_rhs)
-		{
-			return ToLower(a_lhs) == ToLower(a_rhs);
-		}
-
-		void MarkDuplicates()
-		{
-			for (auto& entry : s_entries) {
-				entry.suffix = Entry::Suffix::kNone;
-			}
-
-			// Group by the un-suffixed label: entries that would read the same get a
-			// plugin name, or a form id when even the plugin is the same. Same scheme as
-			// the effect shader dropdown, so the two lists behave identically.
-			for (std::size_t i = 0; i < s_entries.size(); ++i) {
-				for (std::size_t j = i + 1; j < s_entries.size(); ++j) {
-					if (ToLower(s_entries[i].BaseLabel()) != ToLower(s_entries[j].BaseLabel())) {
-						continue;
-					}
-					const auto kind = EqualsIgnoreCasePlugin(s_entries[i].plugin, s_entries[j].plugin) ?
-						Entry::Suffix::kFormID :
-						Entry::Suffix::kPlugin;
-					if (s_entries[i].suffix == Entry::Suffix::kNone) {
-						s_entries[i].suffix = kind;
-					}
-					if (s_entries[j].suffix == Entry::Suffix::kNone) {
-						s_entries[j].suffix = kind;
-					}
-				}
-			}
-		}
-
 	}
 
 	void Init()
@@ -206,29 +128,19 @@ namespace BlinkDash::Perks
 			Entry entry;
 			entry.perk = perk;
 			entry.runtimeFormID = perk->GetFormID();
-			entry.plugin = SourceName(perk);
-			entry.localID = LocalID(entry.runtimeFormID);
+			entry.plugin = Forms::SourceName(perk);
+			entry.localID = Forms::LocalID(entry.runtimeFormID);
 			entry.name = DisplayName(perk);
 			s_entries.push_back(std::move(entry));
 		}
 
+		// Numbering first: the shared sort and the duplicate marking both read BaseLabel(),
+		// which is where the rank is shown.
 		AssignRanks();
 
-		std::ranges::sort(s_entries, [](const Entry& a_lhs, const Entry& a_rhs) {
-			// Named perks first, then the ones without a name (they keep their
-			// plugin:form id label).
-			if (a_lhs.name.empty() != a_rhs.name.empty()) {
-				return !a_lhs.name.empty();
-			}
-			const auto lhs = ToLower(a_lhs.Label());
-			const auto rhs = ToLower(a_rhs.Label());
-			if (lhs != rhs) {
-				return lhs < rhs;
-			}
-			return a_lhs.localID < a_rhs.localID;
-		});
-
-		MarkDuplicates();
+		// Named perks first, then the ones without a name (they keep their plugin:form id
+		// label); the shared helper marks duplicate labels.
+		s_list.SortAndMark();
 
 		for (std::size_t i = 0; i < s_entries.size(); ++i) {
 			const auto& entry = s_entries[i];
@@ -247,19 +159,19 @@ namespace BlinkDash::Perks
 		const auto& want = settings.requiredPerk;
 
 		if (want.empty() || want == kNoneKey) {
-			s_selectedIndex.store((std::numeric_limits<std::size_t>::max)(), std::memory_order_release);
+			s_selectedIndex.store(Forms::kNoSelection, std::memory_order_release);
 			BDI("perks: requirement is 'none'");
 			return;
 		}
-		if (const auto* found = FindByKey(want)) {
-			s_selectedIndex.store(IndexOf(found), std::memory_order_release);
+		if (const auto* found = s_list.Find(want)) {
+			s_selectedIndex.store(s_list.IndexOf(found), std::memory_order_release);
 			BDI("perks: requirement = {}", DescribeSelection());
 			return;
 		}
 
 		// Unknown key (plugin uninstalled, hand-typed): keep the string as written but
 		// treat it as "no requirement", and say so. The menu lets the user fix it.
-		s_selectedIndex.store((std::numeric_limits<std::size_t>::max)(), std::memory_order_release);
+		s_selectedIndex.store(Forms::kNoSelection, std::memory_order_release);
 		BDW("perks: required perk '{}' was not found among {} known perks, requirement is ignored until it is re-picked",
 			want, s_entries.size());
 	}

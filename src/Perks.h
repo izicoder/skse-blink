@@ -1,57 +1,15 @@
 #pragma once
 
 #include "PCH.h"
+#include "FormList.h"
 
 namespace BlinkDash::Perks
 {
-	struct Entry
+	// Key()/Label()/suffix/plugin/localID/name/rank all come from Forms::EntryBase;
+	// Label() numbers multi-rank perks through BaseLabel().
+	struct Entry : Forms::EntryBase
 	{
-		RE::BGSPerk*  perk{ nullptr };
-		std::string   plugin;       // file the form is defined in
-		std::uint32_t localID{ 0 };  // form id inside that file
-		RE::FormID    runtimeFormID{ 0 };
-		std::string   name;         // the perk's editor/full name, may be empty
-		std::uint32_t rank{ 1 };        // position in the nextPerk chain, 1 based
-		std::uint32_t rankCount{ 1 };   // length of that chain, 1 for single-rank perks
-
-		// Value written to the config. Always stable across load order changes.
-		[[nodiscard]] std::string Key() const
-		{
-			return std::format("{}:{:06X}", plugin, localID);
-		}
-
-		enum class Suffix
-		{
-			kNone,     // unique label
-			kPlugin,   // same name exists in another plugin
-			kFormID    // same name exists in the same plugin
-		};
-		Suffix suffix{ Suffix::kNone };
-
-		// Label without any disambiguation suffix. Multi-rank perks are separate records
-		// chained through nextPerk that all share one name, so they are numbered the way
-		// the game shows them ("Armsman 3") instead of falling back to raw form ids.
-		[[nodiscard]] std::string BaseLabel() const
-		{
-			if (name.empty()) {
-				return Key();
-			}
-			return rankCount > 1 ? std::format("{} {}", name, rank) : name;
-		}
-
-		// What the dropdown shows: the perk name when there is one, otherwise the key
-		// (i.e. a perk with no name keeps its plugin:form id label).
-		[[nodiscard]] std::string Label() const
-		{
-			switch (suffix) {
-			case Suffix::kPlugin:
-				return std::format("{} ({})", BaseLabel(), plugin);
-			case Suffix::kFormID:
-				return std::format("{} (0x{:06X})", BaseLabel(), localID);
-			default:
-				return BaseLabel();
-			}
-		}
+		RE::BGSPerk* perk{ nullptr };
 	};
 
 	// Enumerates every BGSPerk in the load order (vanilla and modded alike) and

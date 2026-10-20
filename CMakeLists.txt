@@ -76,6 +76,7 @@ set(SOURCES
 	src/Config.cpp
 	src/Effects.h
 	src/Effects.cpp
+	src/FormList.h
 	src/Debug.h
 	src/Debug.cpp
 	src/Input.h

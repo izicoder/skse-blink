@@ -9,8 +9,8 @@ namespace BlinkDash::Effects
 	{
 		constexpr float kBlinkDuration = 0.35f;
 		constexpr const char* kNameFileName = "BlinkDash.ShaderNames.json";
-		// windows.h defines max() as a macro, hence the parentheses
-		constexpr std::size_t kNoSelection = (std::numeric_limits<std::size_t>::max)();
+		// Every list reports the same "nothing selected" index.
+		using Forms::kNoSelection;
 
 		// TESObjectREFR::ApplyEffectShader -- RELOCATION_ID(19446, 19872).
 		// Resolved by hand (instead of calling the library wrapper) so the address can
@@ -24,9 +24,12 @@ namespace BlinkDash::Effects
 			return fn;
 		}
 
-		std::vector<Entry>                          s_entries;
+		Forms::List<Entry> s_list;
+		// Bound once, declaration order guarantees s_list exists first; every use below can
+		// then keep reading like a plain vector.
+		std::vector<Entry>&                         s_entries = s_list.Mutable();
 		std::unordered_map<std::string, std::string> s_names;
-		std::atomic<std::size_t>                    s_selectedIndex{ kNoSelection };
+		std::atomic<std::size_t>                    s_selectedIndex{ Forms::kNoSelection };
 		bool                                        s_available{ false };
 
 		const Entry* Selected()
@@ -36,57 +39,6 @@ namespace BlinkDash::Effects
 				return nullptr;
 			}
 			return &s_entries[index];
-		}
-
-		// Returns an index so concurrent menu edits and blink playback never race on
-		// a raw pointer.
-		std::size_t IndexOf(const Entry* a_entry)
-		{
-			if (!a_entry) {
-				return kNoSelection;
-			}
-			return static_cast<std::size_t>(a_entry - s_entries.data());
-		}
-
-		std::string ToLower(std::string_view a_text)
-		{
-			std::string out{ a_text };
-			for (auto& c : out) {
-				if (c >= 'A' && c <= 'Z') {
-					c = static_cast<char>(c - 'A' + 'a');
-				}
-			}
-			return out;
-		}
-
-		bool EqualsIgnoreCase(std::string_view a_lhs, std::string_view a_rhs)
-		{
-			if (a_lhs.size() != a_rhs.size()) {
-				return false;
-			}
-			for (std::size_t i = 0; i < a_lhs.size(); ++i) {
-				const char l = (a_lhs[i] >= 'A' && a_lhs[i] <= 'Z') ? static_cast<char>(a_lhs[i] - 'A' + 'a') : a_lhs[i];
-				const char r = (a_rhs[i] >= 'A' && a_rhs[i] <= 'Z') ? static_cast<char>(a_rhs[i] - 'A' + 'a') : a_rhs[i];
-				if (l != r) {
-					return false;
-				}
-			}
-			return true;
-		}
-
-		std::string SourceName(RE::TESForm* a_form)
-		{
-			if (auto* file = a_form ? a_form->GetFile(0) : nullptr) {
-				return std::string{ file->GetFilename() };
-			}
-			return "<unknown>";
-		}
-
-		// Light plugins (ESL / ESP with the light flag) use a 12 bit form id, normal
-		// ones 24 bit. Matches the layout of the generated name file.
-		std::uint32_t LocalID(RE::FormID a_runtimeFormID)
-		{
-			return (a_runtimeFormID >> 24) == 0xFE ? (a_runtimeFormID & 0xFFF) : (a_runtimeFormID & 0xFFFFFF);
 		}
 
 		// BlinkDash.ShaderNames.json sits next to BlinkDash.json, i.e. inside the mod
@@ -129,29 +81,11 @@ namespace BlinkDash::Effects
 			}
 		}
 
-		const Entry* FindByKey(std::string_view a_key)
-		{
-			if (a_key.empty()) {
-				return nullptr;
-			}
-			for (const auto& entry : s_entries) {
-				if (entry.Key() == a_key) {
-					return &entry;
-				}
-				// legacy: earlier versions stored the runtime form id, and users may
-				// hand write one
-				if (a_key.size() == 10 && EqualsIgnoreCase(a_key, std::format("0x{:08X}", entry.runtimeFormID))) {
-					return &entry;
-				}
-			}
-			return nullptr;
-		}
-
 		const Entry* FirstMatching(std::initializer_list<std::string_view> a_needles)
 		{
 			for (const auto needle : a_needles) {
 				for (const auto& entry : s_entries) {
-					const std::string candidate = ToLower(entry.name);
+					const std::string candidate = Forms::ToLower(entry.name);
 					if (!candidate.empty() && candidate.find(needle) != std::string::npos) {
 						BD("effects: auto-pick candidate '{}' matched '{}'", needle, entry.Label());
 						return &entry;
@@ -159,32 +93,6 @@ namespace BlinkDash::Effects
 				}
 			}
 			return nullptr;
-		}
-
-		void MarkDuplicates()
-		{
-			for (auto& entry : s_entries) {
-				entry.suffix = Entry::Suffix::kNone;
-			}
-
-			// Group by the un-suffixed label: entries that would read the same get a
-			// plugin name, or a form id when even the plugin is the same.
-			for (std::size_t i = 0; i < s_entries.size(); ++i) {
-				for (std::size_t j = i + 1; j < s_entries.size(); ++j) {
-					if (s_entries[i].BaseLabel() != s_entries[j].BaseLabel()) {
-						continue;
-					}
-					const auto kind = EqualsIgnoreCase(s_entries[i].plugin, s_entries[j].plugin) ?
-						Entry::Suffix::kFormID :
-						Entry::Suffix::kPlugin;
-					if (s_entries[i].suffix == Entry::Suffix::kNone) {
-						s_entries[i].suffix = kind;
-					}
-					if (s_entries[j].suffix == Entry::Suffix::kNone) {
-						s_entries[j].suffix = kind;
-					}
-				}
-			}
 		}
 	}
 
@@ -222,8 +130,8 @@ namespace BlinkDash::Effects
 			BDW("effects: shader '{}' is set in the config but effects are unavailable", want);
 			return;
 		}
-		if (const auto* found = FindByKey(want)) {
-			s_selectedIndex.store(IndexOf(found), std::memory_order_release);
+		if (const auto* found = s_list.Find(want)) {
+			s_selectedIndex.store(s_list.IndexOf(found), std::memory_order_release);
 			BDI("effects: selection = {}", DescribeSelection());
 			return;
 		}
@@ -231,7 +139,7 @@ namespace BlinkDash::Effects
 		// Unknown key: probe the usual suspects so a first run is not silent. The
 		// menu overrides it.
 		if (const auto* probe = FirstMatching({ "invis", "blink", "teleport", "summon", "ghost" })) {
-			s_selectedIndex.store(IndexOf(probe), std::memory_order_release);
+			s_selectedIndex.store(s_list.IndexOf(probe), std::memory_order_release);
 			BDI("effects: '{}' is not a known shader, auto-picked {} - change it in the Skyrim Menu Framework -> Blink Dash",
 				want, DescribeSelection());
 			return;
@@ -279,8 +187,8 @@ namespace BlinkDash::Effects
 			Entry entry;
 			entry.shader = shader;
 			entry.runtimeFormID = shader->GetFormID();
-			entry.plugin = SourceName(shader);
-			entry.localID = LocalID(entry.runtimeFormID);
+			entry.plugin = Forms::SourceName(shader);
+			entry.localID = Forms::LocalID(entry.runtimeFormID);
 
 			if (const auto it = s_names.find(entry.Key()); it != s_names.end()) {
 				entry.name = it->second;
@@ -289,21 +197,9 @@ namespace BlinkDash::Effects
 			s_entries.push_back(std::move(entry));
 		}
 
-		std::ranges::sort(s_entries, [](const Entry& a_lhs, const Entry& a_rhs) {
-			// Named shaders first, then the ones the name file does not cover (they
-			// keep their plugin:form id label).
-			if (a_lhs.name.empty() != a_rhs.name.empty()) {
-				return !a_lhs.name.empty();
-			}
-			const auto lhs = ToLower(a_lhs.Label());
-			const auto rhs = ToLower(a_rhs.Label());
-			if (lhs != rhs) {
-				return lhs < rhs;
-			}
-			return a_lhs.localID < a_rhs.localID;
-		});
-
-		MarkDuplicates();
+		// Named shaders first, then the ones the name file does not cover (they keep their
+		// plugin:form id label); the shared helper also marks duplicate labels.
+		s_list.SortAndMark();
 
 		for (std::size_t i = 0; i < s_entries.size(); ++i) {
 			const auto& entry = s_entries[i];
